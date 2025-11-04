@@ -2,6 +2,10 @@ import sys
 import re
 import json
 import time
+import os
+import subprocess
+import threading
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
@@ -10,7 +14,7 @@ from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QTextEdit, QGroupBox, QTableWidget,
-    QTableWidgetItem, QMessageBox
+    QTableWidgetItem, QMessageBox, QFileDialog
 )
 
 try:
@@ -159,6 +163,10 @@ class FactoryGUI(QMainWindow):
         self.timer.setInterval(50)  # 20Hz 轮询串口
         self.timer.timeout.connect(self.on_tick)
 
+        # 状态：是否在等待一次自测 JSON（用于“烧录并等待”功能）
+        self._awaiting_result = False
+        self._await_deadline_ms = 0
+
         self._build_ui()
         self._refresh_ports()
 
@@ -174,6 +182,7 @@ class FactoryGUI(QMainWindow):
         self.connect_btn = QPushButton("连接")
         self.disconnect_btn = QPushButton("断开")
         self.simulate_btn = QPushButton("模拟JSON")
+        self.flash_btn = QPushButton("烧录并等待")
         self.disconnect_btn.setEnabled(False)
         top.addWidget(QLabel("串口:"))
         top.addWidget(self.port_combo, 1)
@@ -181,6 +190,7 @@ class FactoryGUI(QMainWindow):
         top.addWidget(self.connect_btn)
         top.addWidget(self.disconnect_btn)
         top.addWidget(self.simulate_btn)
+        top.addWidget(self.flash_btn)
         root.addLayout(top)
 
         # 中部：结果面板
@@ -258,6 +268,7 @@ class FactoryGUI(QMainWindow):
         self.connect_btn.clicked.connect(self._on_connect)
         self.disconnect_btn.clicked.connect(self._on_disconnect)
         self.simulate_btn.clicked.connect(self._on_simulate)
+        self.flash_btn.clicked.connect(self._on_flash_and_wait)
 
     def _refresh_ports(self):
         self.port_combo.clear()
@@ -329,6 +340,12 @@ class FactoryGUI(QMainWindow):
         elif len(self.serial.buffer) > 100_000:
             self.serial.buffer = self.serial.buffer[-50_000:]
 
+        # 若正在等待一次结果，检测是否超时
+        if self._awaiting_result and self._await_deadline_ms:
+            if int(time.time() * 1000) > self._await_deadline_ms:
+                self._awaiting_result = False
+                QMessageBox.warning(self, "等待超时", "烧录完成后未在超时时间内收到自测结果。")
+
     def _apply_summary(self, data: dict):
         # 容错解析
         res = SelftestResult()
@@ -376,6 +393,11 @@ class FactoryGUI(QMainWindow):
         self.lbl_bat.set_state(res.battery_ok)
         self.lbl_bat_v.setText(f"V={res.battery_v:.2f}V")
 
+        # 如果正处于“烧录并等待”的等待阶段，第一帧解析成功即完成
+        if self._awaiting_result:
+            self._awaiting_result = False
+            QMessageBox.information(self, "自测完成", "已收到 DUT 自测结果。")
+
     def _on_simulate(self):
         demo = (
             "SELFTEST SUMMARY:\n"
@@ -400,6 +422,84 @@ class FactoryGUI(QMainWindow):
                     self._apply_summary(json.loads(cleaned))
                 except Exception:
                     pass
+
+    # 选择 flash_project_args 文件（推荐）
+    def _pick_flash_args_file(self) -> Optional[Path]:
+        caption = "选择 flash_project_args (ESP-IDF 构建生成)"
+        default_dir = os.getcwd()
+        path, _ = QFileDialog.getOpenFileName(self, caption, default_dir, "flash_project_args;*.*")
+        if not path:
+            return None
+        p = Path(path)
+        if p.name != "flash_project_args":
+            QMessageBox.warning(self, "文件不匹配", "请选择 ESP-IDF 构建目录下的 flash_project_args 文件。")
+            return None
+        return p
+
+    def _on_flash_and_wait(self):
+        port = self.port_combo.currentText()
+        if not port or port.startswith("<"):
+            QMessageBox.warning(self, "无串口", "请先选择 CDC 串口（桥接到 DUT 的那个口）。")
+            return
+        # 选择 flash_project_args
+        arg_file = self._pick_flash_args_file()
+        if not arg_file:
+            return
+
+        # 若当前占用串口，先断开
+        if self.disconnect_btn.isEnabled():
+            self._on_disconnect()
+
+        def run_flash():
+            # 在独立线程中执行 esptool，避免阻塞 UI
+            try:
+                self._append_log_async(f"[FLASH] 使用端口 {port}，开始烧录...\n")
+                cwd = str(arg_file.parent)
+                cmd = [
+                    sys.executable, "-m", "esptool",
+                    "--chip", "auto",
+                    "--port", port,
+                    "--baud", "921600",
+                    "--before", "default_reset",
+                    "--after", "hard_reset",
+                    "write_flash",
+                    "@" + str(arg_file)
+                ]
+                self._append_log_async("[FLASH] cmd: " + " ".join(cmd) + "\n")
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd, text=True, bufsize=1)
+                for line in proc.stdout:
+                    self._append_log_async(line)
+                ret = proc.wait()
+                if ret == 0:
+                    self._append_log_async("[FLASH] 成功，准备重新连接串口并等待自测结果...\n")
+                    # 重新连接串口
+                    ok = self.serial.open(port, 115200)
+                    if ok:
+                        # 开始轮询
+                        QTimer.singleShot(0, self.timer.start)
+                        self.connect_btn.setEnabled(False)
+                        self.disconnect_btn.setEnabled(True)
+                        # 启动等待窗口/超时（例如 40 秒）
+                        self._awaiting_result = True
+                        self._await_deadline_ms = int(time.time() * 1000) + 40_000
+                        self._append_log_async("[FLASH] 串口已重连，等待 DUT 打印 SELFTEST SUMMARY JSON...\n")
+                    else:
+                        self._append_log_async(f"[FLASH] 重新打开串口失败: {port}\n")
+                        QTimer.singleShot(0, lambda: QMessageBox.critical(self, "连接失败", f"无法重新打开串口: {port}"))
+                else:
+                    self._append_log_async(f"[FLASH] 失败，返回码 {ret}\n")
+                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "烧录失败", f"esptool 返回码 {ret}"))
+            except FileNotFoundError:
+                self._append_log_async("[FLASH] 未找到 esptool（请安装 esptool 并确保 Python 可执行）。\n")
+                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "缺少依赖", "未找到 esptool。请先执行: pip install esptool"))
+            except Exception as e:
+                self._append_log_async(f"[FLASH] 异常: {e}\n")
+                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "异常", str(e)))
+
+        threading.Thread(target=run_flash, daemon=True).start()
+
+    def _append_log_async(self, text: str):
+        QTimer.singleShot(0, lambda: self._append_log(text))
 
 
 def main():
