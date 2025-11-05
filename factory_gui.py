@@ -143,6 +143,16 @@ class SerialClient:
         except Exception:
             return ""
 
+    def write_text(self, text: str):
+        if not self.ser:
+            return False
+        try:
+            self.ser.write(text.encode('utf-8', errors='ignore'))
+            self.ser.flush()
+            return True
+        except Exception:
+            return False
+
 
 class StatusLabel(QLabel):
     def set_state(self, ok: bool, text: Optional[str] = None):
@@ -169,6 +179,16 @@ class FactoryGUI(QMainWindow):
 
         self._build_ui()
         self._refresh_ports()
+
+    def _set_ui_busy(self, busy: bool):
+        # 仅在主线程调用
+        self.port_combo.setEnabled(not busy)
+        self.refresh_btn.setEnabled(not busy)
+        self.connect_btn.setEnabled(not busy and self.connect_btn.isEnabled())
+        # 断开按钮在忙时不可点击，避免打断流程
+        self.disconnect_btn.setEnabled(False if busy else self.disconnect_btn.isEnabled())
+        self.simulate_btn.setEnabled(not busy)
+        self.flash_btn.setEnabled(not busy)
 
     def _build_ui(self):
         central = QWidget(self)
@@ -445,40 +465,158 @@ class FactoryGUI(QMainWindow):
         arg_file = self._pick_flash_args_file()
         if not arg_file:
             return
+        # 立即在日志中记录所选文件，便于确认是否进入流程
+        self._append_log(f"[FLASH] 已选择 flash_project_args: {arg_file}\n")
 
-        # 若当前占用串口，先断开
-        if self.disconnect_btn.isEnabled():
-            self._on_disconnect()
+        # 若当前已连接，优先使用现有句柄发送 !BOOT，避免 Windows 下再次打开同一 COM 口卡住
+        used_existing_for_boot = False
+        if self.disconnect_btn.isEnabled() and getattr(self.serial, 'ser', None):
+            try:
+                self._append_log("[FLASH] 通过当前连接发送 !BOOT…\n")
+                # 暂停轮询，避免读写竞争
+                self.timer.stop()
+                self.serial.ser.reset_input_buffer()
+                self.serial.ser.write(b"!BOOT\n")
+                self.serial.ser.flush()
+                t0 = time.time()
+                boot_ok = False
+                while time.time() - t0 < 2.0:
+                    line = self.serial.ser.readline().decode(errors='ignore')
+                    if line:
+                        self._append_log(line)
+                        if "JIG: BOOT OK" in line:
+                            boot_ok = True
+                            break
+                if not boot_ok:
+                    self._append_log("[FLASH] 未收到 JIG: BOOT OK（继续尝试烧录）\n")
+                used_existing_for_boot = True
+            except Exception as e:
+                self._append_log(f"[FLASH] 通过当前连接发送 !BOOT 失败: {e}\n")
+            finally:
+                # 不论成功与否，都主动断开，为后续 esptool 让路
+                self._on_disconnect()
+        else:
+            # 未连接则保持原有流程，在线程里用临时句柄发送 !BOOT
+            pass
+
+        # 加锁 UI，防误操作
+        self._set_ui_busy(True)
+        # 主线程先给出提示，避免用户误以为无响应
+        self._append_log("[FLASH] 正在启动烧录线程，请稍候…\n")
 
         def run_flash():
             # 在独立线程中执行 esptool，避免阻塞 UI
             try:
-                self._append_log_async(f"[FLASH] 使用端口 {port}，开始烧录...\n")
-                cwd = str(arg_file.parent)
+                # 控制台也打一份，方便从 VSCode 终端确认线程已启动
+                print("[FLASH][DBG] worker thread started")
+                self._append_log_async(f"[FLASH] 使用端口 {port}，准备进入下载模式...\n")
+
+                # 预步骤：通过治具命令进入下载模式（不依赖 DTR/RTS）
+                if serial is None:
+                    self._append_log_async("[FLASH] PySerial 不可用，无法发送 BOOT/RUN 控制命令。\n")
+                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "缺少依赖", "未找到 pyserial。请先执行: pip install pyserial"))
+                    return
+                if not used_existing_for_boot:
+                    try:
+                        print("[FLASH][DBG] opening serial for !BOOT...")
+                        tmp = serial.Serial(port=port, baudrate=115200, timeout=0.2)
+                        tmp.reset_input_buffer()
+                        tmp.write(b"!BOOT\n")
+                        tmp.flush()
+                        print("[FLASH][DBG] !BOOT sent, waiting for JIG reply...")
+                        t0 = time.time()
+                        boot_ok = False
+                        while time.time() - t0 < 2.0:
+                            line = tmp.readline().decode(errors='ignore')
+                            if line:
+                                self._append_log_async(line)
+                                if "JIG: BOOT OK" in line:
+                                    boot_ok = True
+                                    break
+                        if not boot_ok:
+                            self._append_log_async("[FLASH] 未收到 JIG: BOOT OK，继续尝试烧录（可能也能成功）...\n")
+                    except Exception as e:
+                        self._append_log_async(f"[FLASH] 发送 BOOT 命令失败: {e}\n")
+                    finally:
+                        try:
+                            tmp.close()
+                        except Exception:
+                            pass
+                else:
+                    self._append_log_async("[FLASH] 已完成进入下载模式（复用现有连接发送）\n")
+
+                print("[FLASH][DBG] launching esptool...")
+                self._append_log_async(f"[FLASH] 开始烧录...\n")
+                abs_args = str(arg_file.resolve())
+                try:
+                    # 打印参数文件的前几行，帮助排查参数问题
+                    with open(abs_args, 'r', encoding='utf-8', errors='ignore') as f:
+                        head = ''.join([next(f) for _ in range(5)])
+                    self._append_log_async("[FLASH] flash_project_args head:\n" + head + "\n")
+                except Exception:
+                    pass
                 cmd = [
-                    sys.executable, "-m", "esptool",
-                    "--chip", "auto",
+                    sys.executable, "-u", "-m", "esptool",
+                    "-vv", "--trace",
+                    "--chip", "esp32s3",
                     "--port", port,
-                    "--baud", "921600",
-                    "--before", "default_reset",
-                    "--after", "hard_reset",
+                    "--baud", "115200",
+                    "--before", "no_reset",
+                    "--after", "no_reset",
+                    "--no-stub",
                     "write_flash",
-                    "@" + str(arg_file)
+                    "@" + abs_args,
                 ]
                 self._append_log_async("[FLASH] cmd: " + " ".join(cmd) + "\n")
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=cwd, text=True, bufsize=1)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                print("[FLASH][DBG] esptool started, reading output...")
                 for line in proc.stdout:
                     self._append_log_async(line)
                 ret = proc.wait()
+                try:
+                    # 读取可能未按行结束的残余输出
+                    remainder = proc.stdout.read() or ""
+                    if remainder:
+                        self._append_log_async(remainder)
+                except Exception:
+                    pass
+                print(f"[FLASH][DBG] esptool exited with {ret}")
                 if ret == 0:
-                    self._append_log_async("[FLASH] 成功，准备重新连接串口并等待自测结果...\n")
-                    # 重新连接串口
-                    ok = self.serial.open(port, 115200)
+                    self._append_log_async("[FLASH] 成功，发送 RUN 命令复位进入应用...\n")
+
+                    # 发送 RUN 命令让 DUT 进入应用
+                    try:
+                        print("[FLASH][DBG] opening serial for !RUN...")
+                        tmp2 = serial.Serial(port=port, baudrate=115200, timeout=0.2)
+                        tmp2.reset_input_buffer()
+                        tmp2.write(b"!RUN\n")
+                        tmp2.flush()
+                        t0 = time.time()
+                        while time.time() - t0 < 0.8:
+                            line = tmp2.readline().decode(errors='ignore')
+                            if line:
+                                self._append_log_async(line)
+                    except Exception as e:
+                        self._append_log_async(f"[FLASH] 发送 RUN 命令失败: {e}\n")
+                    finally:
+                        try:
+                            tmp2.close()
+                        except Exception:
+                            pass
+
+                    self._append_log_async("[FLASH] 准备重新连接串口并等待自测结果...\n")
+                    # 重新连接串口（Windows 可能需要时间释放端口，加入重试）
+                    ok = False
+                    for _ in range(20):  # 最长约 5 秒
+                        ok = self.serial.open(port, 115200)
+                        if ok:
+                            break
+                        time.sleep(0.25)
                     if ok:
                         # 开始轮询
                         QTimer.singleShot(0, self.timer.start)
-                        self.connect_btn.setEnabled(False)
-                        self.disconnect_btn.setEnabled(True)
+                        QTimer.singleShot(0, lambda: self.connect_btn.setEnabled(False))
+                        QTimer.singleShot(0, lambda: self.disconnect_btn.setEnabled(True))
                         # 启动等待窗口/超时（例如 40 秒）
                         self._awaiting_result = True
                         self._await_deadline_ms = int(time.time() * 1000) + 40_000
@@ -487,7 +625,21 @@ class FactoryGUI(QMainWindow):
                         self._append_log_async(f"[FLASH] 重新打开串口失败: {port}\n")
                         QTimer.singleShot(0, lambda: QMessageBox.critical(self, "连接失败", f"无法重新打开串口: {port}"))
                 else:
-                    self._append_log_async(f"[FLASH] 失败，返回码 {ret}\n")
+                    # 附带一次诊断：读取 chip_id，帮助判断是端口占用还是 ROM 沟通失败
+                    self._append_log_async(f"[FLASH] 失败，返回码 {ret}（尝试诊断 chip_id）\n")
+                    diag = [
+                        sys.executable, "-u", "-m", "esptool",
+                        "--chip", "esp32s3", "--port", port, "--baud", "921600",
+                        "--before", "no_reset", "--after", "no_reset",
+                        "chip_id",
+                    ]
+                    self._append_log_async("[FLASH] diag: " + " ".join(diag) + "\n")
+                    try:
+                        dproc = subprocess.Popen(diag, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                        out = dproc.communicate(timeout=5)[0]
+                        self._append_log_async(out)
+                    except Exception as e:
+                        self._append_log_async(f"[FLASH] diag error: {e}\n")
                     QTimer.singleShot(0, lambda: QMessageBox.critical(self, "烧录失败", f"esptool 返回码 {ret}"))
             except FileNotFoundError:
                 self._append_log_async("[FLASH] 未找到 esptool（请安装 esptool 并确保 Python 可执行）。\n")
@@ -495,6 +647,9 @@ class FactoryGUI(QMainWindow):
             except Exception as e:
                 self._append_log_async(f"[FLASH] 异常: {e}\n")
                 QTimer.singleShot(0, lambda: QMessageBox.critical(self, "异常", str(e)))
+            finally:
+                # 解锁 UI（在主线程）
+                QTimer.singleShot(0, lambda: self._set_ui_busy(False))
 
         threading.Thread(target=run_flash, daemon=True).start()
 
