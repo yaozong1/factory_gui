@@ -168,12 +168,15 @@ class FactoryGUI(QMainWindow):
         self.setWindowTitle("PE-Board Factory GUI (Preview)")
         self.resize(980, 680)
 
-        self.serial = SerialClient()
+        # 双串口管理：控制口用于命令，刷机口用于读取数据
+        self.ctrl_serial = SerialClient()  # 控制口（治具，发送 !BOOT/!RUN）
+        self.flash_serial = SerialClient()  # 刷机口（DUT，读取自测结果）
+        
         self.timer = QTimer(self)
         self.timer.setInterval(50)  # 20Hz 轮询串口
         self.timer.timeout.connect(self.on_tick)
 
-        # 状态：是否在等待一次自测 JSON（用于“烧录并等待”功能）
+        # 状态：是否在等待一次自测 JSON（用于"烧录并等待"功能）
         self._awaiting_result = False
         self._await_deadline_ms = 0
 
@@ -182,13 +185,24 @@ class FactoryGUI(QMainWindow):
 
     def _set_ui_busy(self, busy: bool):
         # 仅在主线程调用
-        self.port_combo.setEnabled(not busy)
+        # 双口模型：同时控制两个下拉
+        self.ctrl_combo.setEnabled(not busy)
+        self.flash_combo.setEnabled(not busy)
         self.refresh_btn.setEnabled(not busy)
         self.connect_btn.setEnabled(not busy and self.connect_btn.isEnabled())
         # 断开按钮在忙时不可点击，避免打断流程
         self.disconnect_btn.setEnabled(False if busy else self.disconnect_btn.isEnabled())
         self.simulate_btn.setEnabled(not busy)
         self.flash_btn.setEnabled(not busy)
+        # 新增按钮的忙碌态控制
+        if hasattr(self, 'boot_btn'):
+            self.boot_btn.setEnabled(not busy)
+        if hasattr(self, 'run_btn'):
+            self.run_btn.setEnabled(not busy)
+        if hasattr(self, 'flash_only_btn'):
+            self.flash_only_btn.setEnabled(not busy)
+        if hasattr(self, 'chipid_btn'):
+            self.chipid_btn.setEnabled(not busy)
 
     def _build_ui(self):
         central = QWidget(self)
@@ -197,20 +211,32 @@ class FactoryGUI(QMainWindow):
 
         # 顶部：串口控制
         top = QHBoxLayout()
-        self.port_combo = QComboBox()
+        self.ctrl_combo = QComboBox()
+        self.flash_combo = QComboBox()
         self.refresh_btn = QPushButton("刷新串口")
         self.connect_btn = QPushButton("连接")
         self.disconnect_btn = QPushButton("断开")
         self.simulate_btn = QPushButton("模拟JSON")
         self.flash_btn = QPushButton("烧录并等待")
+        # 新增：分步诊断/操作按钮
+        self.boot_btn = QPushButton("进下载(!BOOT)")
+        self.run_btn = QPushButton("运行(!RUN)")
+        self.flash_only_btn = QPushButton("仅刷写(esptool)")
+        self.chipid_btn = QPushButton("esptool chip_id")
         self.disconnect_btn.setEnabled(False)
-        top.addWidget(QLabel("串口:"))
-        top.addWidget(self.port_combo, 1)
+        top.addWidget(QLabel("控制口(治具):"))
+        top.addWidget(self.ctrl_combo, 1)
+        top.addWidget(QLabel("刷机口(DUT):"))
+        top.addWidget(self.flash_combo, 1)
         top.addWidget(self.refresh_btn)
         top.addWidget(self.connect_btn)
         top.addWidget(self.disconnect_btn)
         top.addWidget(self.simulate_btn)
         top.addWidget(self.flash_btn)
+        top.addWidget(self.boot_btn)
+        top.addWidget(self.run_btn)
+        top.addWidget(self.flash_only_btn)
+        top.addWidget(self.chipid_btn)
         root.addLayout(top)
 
         # 中部：结果面板
@@ -289,50 +315,317 @@ class FactoryGUI(QMainWindow):
         self.disconnect_btn.clicked.connect(self._on_disconnect)
         self.simulate_btn.clicked.connect(self._on_simulate)
         self.flash_btn.clicked.connect(self._on_flash_and_wait)
+        self.boot_btn.clicked.connect(self._on_boot_only)
+        self.run_btn.clicked.connect(self._on_run_only)
+        self.flash_only_btn.clicked.connect(self._on_flash_only)
+        self.chipid_btn.clicked.connect(self._on_chip_id)
 
     def _refresh_ports(self):
-        self.port_combo.clear()
-        ports = self.serial.list_ports()
+        for combo in (self.ctrl_combo, self.flash_combo):
+            combo.clear()
+        ports = SerialClient.list_ports()
         for p in ports:
-            self.port_combo.addItem(p)
+            self.ctrl_combo.addItem(p)
+            self.flash_combo.addItem(p)
         if not ports:
-            self.port_combo.addItem("<无串口>")
+            self.ctrl_combo.addItem("<无串口>")
+            self.flash_combo.addItem("<无串口>")
 
     def _on_connect(self):
-        port = self.port_combo.currentText()
+        # 同时连接控制口和刷机口
+        ctrl_port = self.ctrl_combo.currentText()
+        flash_port = self.flash_combo.currentText()
+        
+        if not ctrl_port or ctrl_port.startswith("<"):
+            QMessageBox.warning(self, "连接失败", "请选择控制口")
+            return
+        if not flash_port or flash_port.startswith("<"):
+            QMessageBox.warning(self, "连接失败", "请选择刷机口")
+            return
+            
+        # 打开控制口
+        ok1 = self.ctrl_serial.open(ctrl_port, 115200)
+        if not ok1:
+            QMessageBox.critical(self, "连接失败", f"无法打开控制口: {ctrl_port}")
+            return
+            
+        # 打开刷机口
+        ok2 = self.flash_serial.open(flash_port, 115200)
+        if not ok2:
+            self.ctrl_serial.close()
+            QMessageBox.critical(self, "连接失败", f"无法打开刷机口: {flash_port}")
+            return
+        
+        # 启动定时器读取刷机口数据
+        self.timer.start()
+        self.connect_btn.setEnabled(False)
+        self.disconnect_btn.setEnabled(True)
+        self._append_log(f"[INFO] 已连接控制口 {ctrl_port} + 刷机口 {flash_port}\n")
+
+    def _on_connect_flash(self):
+        # 连接刷机口（CH340），用于读取 DUT 输出的自测结果
+        port = self.flash_combo.currentText()
         if not port or port.startswith("<"):
             QMessageBox.warning(self, "连接失败", "未发现可用串口")
             return
-        ok = self.serial.open(port, 115200)
+        ok = self.flash_serial.open(port, 115200)
         if not ok:
             QMessageBox.critical(self, "连接失败", f"无法打开串口: {port}")
             return
         self.timer.start()
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(True)
-        self._append_log(f"[INFO] Connected {port} @115200\n")
+        self._append_log(f"[INFO] Connected 刷机口 {port} @115200（将读取 DUT 自测输出）\n")
 
     def _on_disconnect(self):
+        # 同时断开两个串口
         self.timer.stop()
-        self.serial.close()
+        self.ctrl_serial.close()
+        self.flash_serial.close()
         self.connect_btn.setEnabled(True)
         self.disconnect_btn.setEnabled(False)
-        self._append_log("[INFO] Disconnected\n")
+        self._append_log("[INFO] 已断开所有串口\n")
 
     def _append_log(self, text: str):
         self.log.moveCursor(QTextCursor.End)
         self.log.insertPlainText(text)
         self.log.moveCursor(QTextCursor.End)
 
+    # 仅发送 !BOOT（进入下载）
+    def _on_boot_only(self):
+        ctrl_port = self.ctrl_combo.currentText()
+        if not ctrl_port or ctrl_port.startswith("<"):
+            QMessageBox.warning(self, "无控制口", "请选择控制口(USB-Serial-JTAG)")
+            return
+        try:
+            self._append_log("[CTRL] 开始进入下载模式: !BOOT\n")
+            used_existing = False
+            # 如果 GUI 已连接控制口，复用现有句柄，避免 Windows 占口冲突
+            if self.disconnect_btn.isEnabled() and getattr(self.ctrl_serial, 'ser', None):
+                try:
+                    self.timer.stop()
+                    self.ctrl_serial.ser.reset_input_buffer()
+                    self.ctrl_serial.ser.write(b"!BOOT\n")
+                    self.ctrl_serial.ser.flush()
+                    used_existing = True
+                    t0 = time.time(); boot_ok = False
+                    while time.time() - t0 < 2.0:
+                        line = self.ctrl_serial.ser.readline().decode(errors='ignore')
+                        if line:
+                            self._append_log(line)
+                            if "JIG: BOOT OK" in line:
+                                boot_ok = True
+                                break
+                    if not boot_ok:
+                        self._append_log("[CTRL] 未收到 JIG: BOOT OK（DUT 可能也已进入下载，继续下一步验证）\n")
+                finally:
+                    # 恢复轮询
+                    self.timer.start()
+            else:
+                # 未连接，则临时打开一次
+                tmp = serial.Serial(port=ctrl_port, baudrate=115200, timeout=0.2)
+                try:
+                    tmp.reset_input_buffer()
+                    tmp.write(b"!BOOT\n")
+                    tmp.flush()
+                    t0 = time.time(); boot_ok = False
+                    while time.time() - t0 < 2.0:
+                        line = tmp.readline().decode(errors='ignore')
+                        if line:
+                            self._append_log(line)
+                            if "JIG: BOOT OK" in line:
+                                boot_ok = True
+                                break
+                    if not boot_ok:
+                        self._append_log("[CTRL] 未收到 JIG: BOOT OK（DUT 可能也已进入下载，继续下一步验证）\n")
+                finally:
+                    try:
+                        tmp.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            QMessageBox.critical(self, "失败", f"发送 !BOOT 失败: {e}")
+            self._append_log(f"[CTRL] 发送 !BOOT 失败: {e}\n")
+
+    # 仅发送 !RUN（正常启动）
+    def _on_run_only(self):
+        ctrl_port = self.ctrl_combo.currentText()
+        if not ctrl_port or ctrl_port.startswith("<"):
+            QMessageBox.warning(self, "无控制口", "请选择控制口(USB-Serial-JTAG)")
+            return
+        try:
+            self._append_log("[CTRL] 发送运行命令: !RUN\n")
+            if self.disconnect_btn.isEnabled() and getattr(self.ctrl_serial, 'ser', None):
+                try:
+                    self.timer.stop()
+                    self.ctrl_serial.ser.reset_input_buffer()
+                    self.ctrl_serial.ser.write(b"!RUN\n")
+                    self.ctrl_serial.ser.flush()
+                    t0 = time.time()
+                    while time.time() - t0 < 0.8:
+                        line = self.ctrl_serial.ser.readline().decode(errors='ignore')
+                        if line:
+                            self._append_log(line)
+                finally:
+                    self.timer.start()
+            else:
+                tmp = serial.Serial(port=ctrl_port, baudrate=115200, timeout=0.2)
+                try:
+                    tmp.reset_input_buffer()
+                    tmp.write(b"!RUN\n")
+                    tmp.flush()
+                    t0 = time.time()
+                    while time.time() - t0 < 0.8:
+                        line = tmp.readline().decode(errors='ignore')
+                        if line:
+                            self._append_log(line)
+                finally:
+                    try:
+                        tmp.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            QMessageBox.critical(self, "失败", f"发送 !RUN 失败: {e}")
+            self._append_log(f"[CTRL] 发送 !RUN 失败: {e}\n")
+
+    # 仅运行 esptool write_flash（不发送 !BOOT/!RUN）— 同步执行版本
+    def _on_flash_only(self):
+        flash_port = self.flash_combo.currentText()
+        if not flash_port or flash_port.startswith("<"):
+            QMessageBox.warning(self, "无刷机口", "请选择刷机口(CH340)")
+            return
+        
+        # 先检查是否已进入下载模式
+        reply = QMessageBox.question(
+            self, 
+            "准备刷写", 
+            '请确认已点击"进下载(!BOOT)"让 DUT 进入下载模式。\n\n是否继续刷写？',
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+            
+        arg_file = self._pick_flash_args_file()
+        if not arg_file:
+            return
+        self._append_log(f"[FLASH-ONLY] 仅刷写，端口 {flash_port}, args: {arg_file}\n")
+        
+        # 直接在主线程同步执行，避免跨线程问题
+        try:
+            abs_args = str(arg_file.resolve())
+            # 打印参数文件头几行帮助核对
+            try:
+                with open(abs_args, 'r', encoding='utf-8', errors='ignore') as f:
+                    head = ''.join([next(f) for _ in range(5)])
+                self._append_log("[FLASH-ONLY] flash_project_args head:\n" + head + "\n")
+            except Exception:
+                pass
+            
+            cmd = [
+                sys.executable, "-u", "-m", "esptool",
+                "--chip", "esp32s3",
+                "--port", flash_port,
+                "-b", "921600",  # 直连 DUT，可以用高速了
+                "--before", "no_reset",
+                "--after", "no_reset",
+                "write_flash",
+                "@" + abs_args,
+            ]
+            self._append_log("[FLASH-ONLY] cmd: " + " ".join(cmd) + "\n")
+            self._append_log("[FLASH-ONLY] 运行中（可能需要20秒-3分钟，期间界面会暂停响应）...\n")
+            QApplication.processEvents()  # 让 UI 更新
+            # 在 build 目录下运行，确保 @flash_project_args 中的相对路径可解析
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=arg_file.parent)
+            out, _ = proc.communicate(timeout=300)  # 最多5分钟
+            self._append_log(out)
+            ret = proc.returncode
+            self._append_log(f"[FLASH-ONLY] 退出码: {ret}\n")
+            if ret == 0:
+                QMessageBox.information(self, "完成", "仅刷写成功")
+            else:
+                QMessageBox.critical(self, "烧录失败", f"esptool 返回码 {ret}")
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                out = proc.communicate()[0]
+                self._append_log(out)
+            except:
+                pass
+            self._append_log("[FLASH-ONLY] 超时（5分钟）\n")
+            QMessageBox.critical(self, "超时", "烧录超时（5分钟）")
+        except Exception as e:
+            self._append_log(f"[FLASH-ONLY] 异常: {e}\n")
+            QMessageBox.critical(self, "异常", str(e))
+
+    # 仅运行 esptool chip_id（不刷写）— 简化版，直接同步执行
+    def _on_chip_id(self):
+        flash_port = self.flash_combo.currentText()
+        if not flash_port or flash_port.startswith("<"):
+            QMessageBox.warning(self, "无刷机口", "请选择刷机口(CH340)")
+            return
+        self._append_log(f"[CHIP_ID] 开始，端口 {flash_port}\n")
+        # 直接在主线程同步执行，避免所有跨线程问题
+        try:
+            cmd = [
+                sys.executable, "-u", "-m", "esptool",
+                "--chip", "esp32s3",
+                "--port", flash_port,
+                "-b", "115200",
+                "--before", "no_reset",
+                "--after", "no_reset",
+                "chip_id",
+            ]
+            self._append_log("[CHIP_ID] cmd: " + " ".join(cmd) + "\n")
+            self._append_log("[CHIP_ID] 运行中（可能需要10-20秒，期间界面会暂停响应）...\n")
+            QApplication.processEvents()  # 让 UI 更新
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            out, _ = proc.communicate(timeout=30)
+            self._append_log(out)
+            ret = proc.returncode
+            self._append_log(f"[CHIP_ID] 退出码: {ret}\n")
+            if ret == 0:
+                QMessageBox.information(self, "成功", "chip_id 读取成功")
+            else:
+                QMessageBox.critical(self, "失败", f"chip_id 失败，返回码 {ret}")
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+                out = proc.communicate()[0]
+                self._append_log(out)
+            except:
+                pass
+            self._append_log("[CHIP_ID] 超时（30秒）\n")
+            QMessageBox.critical(self, "超时", "chip_id 超时（30秒）")
+        except Exception as e:
+            self._append_log(f"[CHIP_ID] 异常: {e}\n")
+            QMessageBox.critical(self, "异常", str(e))
+
     def on_tick(self):
-        chunk = self.serial.read_lines()
+        # 从刷机口读取 DUT 输出
+        chunk = self.flash_serial.read_lines()
         if not chunk:
+            # 减少调试输出：只在每 100 次打印一次
+            if not hasattr(self, '_tick_counter'):
+                self._tick_counter = 0
+            self._tick_counter += 1
+            if self._tick_counter % 100 == 0:
+                print(f"[TICK][DBG] on_tick #{self._tick_counter}, flash_serial.ser={self.flash_serial.ser is not None}")
+            return
+            # 添加定期心跳日志，确认 on_tick 在运行
+            if hasattr(self, '_tick_counter'):
+                self._tick_counter += 1
+                if self._tick_counter % 100 == 0:  # 每100次（约10秒）打印一次
+                    self._append_log(f"[TICK] on_tick alive ({self._tick_counter} ticks, buffer={len(self.flash_serial.buffer)} bytes)\n")
+            else:
+                self._tick_counter = 0
             return
         self._append_log(chunk)
-        self.serial.buffer += chunk
+        self.flash_serial.buffer += chunk
         # 查找并解析 JSON 摘要
         # 使用括号平衡算法抽取完整 JSON 块，避免正则在嵌套时截断
-        blocks = extract_json_blocks(self.serial.buffer)
+        blocks = extract_json_blocks(self.flash_serial.buffer)
+        if blocks:
+            self._append_log(f"[TICK] Found {len(blocks)} JSON block(s)\n")
         for _, end_pos, json_text in blocks:
             # 清理不可见/非 ASCII 控制字符，避免解析失败
             cleaned = re.sub(r"[^\x09\x0a\x0d\x20-\x7e]", "", json_text)
@@ -356,9 +649,9 @@ class FactoryGUI(QMainWindow):
         # 裁剪缓冲区：若已解析到最后一个 block 的结尾，丢弃其之前的数据，避免重复解析
         if blocks:
             last_end = blocks[-1][1]
-            self.serial.buffer = self.serial.buffer[last_end:]
-        elif len(self.serial.buffer) > 100_000:
-            self.serial.buffer = self.serial.buffer[-50_000:]
+            self.flash_serial.buffer = self.flash_serial.buffer[last_end:]
+        elif len(self.flash_serial.buffer) > 100_000:
+            self.flash_serial.buffer = self.flash_serial.buffer[-50_000:]
 
         # 若正在等待一次结果，检测是否超时
         if self._awaiting_result and self._await_deadline_ms:
@@ -456,202 +749,154 @@ class FactoryGUI(QMainWindow):
             return None
         return p
 
+    def _reconnect_and_wait(self, flash_port: str, ctrl_port: str = None):
+        """在主线程中重连刷机口并启动定时器等待自测结果"""
+        print(f"[RECONNECT][DBG] _reconnect_and_wait called, flash_port={flash_port}, ctrl_port={ctrl_port}")
+        self._append_log(f"[RECONNECT] 尝试重新打开刷机口 {flash_port}...\n")
+        
+        # 如果提供了控制口且之前有打开，也重连控制口
+        if ctrl_port:
+            print(f"[RECONNECT][DBG] attempting to open ctrl_port {ctrl_port}")
+            ctrl_ok = self.ctrl_serial.open(ctrl_port, 115200)
+            if ctrl_ok:
+                self._append_log(f"[RECONNECT] 控制口 {ctrl_port} 已重连\n")
+                print(f"[RECONNECT][DBG] ctrl_port opened successfully")
+            else:
+                self._append_log(f"[RECONNECT] 控制口 {ctrl_port} 重连失败（不影响读取结果）\n")
+                print(f"[RECONNECT][DBG] ctrl_port open failed")
+        
+        # 重新连接刷机口（Windows 可能需要时间释放端口，加入重试）
+        print(f"[RECONNECT][DBG] attempting to open flash_port {flash_port}")
+        ok = False
+        for i in range(20):  # 最长约 5 秒
+            ok = self.flash_serial.open(flash_port, 115200)
+            if ok:
+                self._append_log(f"[RECONNECT] 刷机口打开成功（尝试 {i+1} 次）\n")
+                print(f"[RECONNECT][DBG] flash_port opened successfully on attempt {i+1}")
+                break
+            time.sleep(0.25)
+        if ok:
+            # 开始轮询
+            self._append_log("[RECONNECT] 启动定时器，开始读取数据...\n")
+            print(f"[RECONNECT][DBG] starting timer, interval={self.timer.interval()}ms")
+            self.timer.start()
+            self.connect_btn.setEnabled(False)
+            self.disconnect_btn.setEnabled(True)
+            # 启动等待窗口/超时（例如 40 秒）
+            self._awaiting_result = True
+            self._await_deadline_ms = int(time.time() * 1000) + 40_000
+            self._append_log("[RECONNECT] 等待 DUT 打印 SELFTEST SUMMARY JSON...\n")
+            print(f"[RECONNECT][DBG] awaiting result, deadline in 40s")
+        else:
+            self._append_log(f"[RECONNECT] 重新打开刷机口失败: {flash_port}\n")
+            print(f"[RECONNECT][DBG] flash_port open failed after 20 retries")
+            QMessageBox.critical(self, "连接失败", f"无法重新打开串口: {flash_port}")
+
     def _on_flash_and_wait(self):
-        port = self.port_combo.currentText()
-        if not port or port.startswith("<"):
-            QMessageBox.warning(self, "无串口", "请先选择 CDC 串口（桥接到 DUT 的那个口）。")
+        """极简版：COM24保持打开，只断开/重连COM6"""
+        flash_port = self.flash_combo.currentText()
+        ctrl_port = self.ctrl_combo.currentText()
+        
+        if not flash_port or flash_port.startswith("<"):
+            QMessageBox.warning(self, "无刷机口", "请选择刷机口(CH340)")
             return
-        # 选择 flash_project_args
+
         arg_file = self._pick_flash_args_file()
         if not arg_file:
             return
-        # 立即在日志中记录所选文件，便于确认是否进入流程
-        self._append_log(f"[FLASH] 已选择 flash_project_args: {arg_file}\n")
 
-        # 若当前已连接，优先使用现有句柄发送 !BOOT，避免 Windows 下再次打开同一 COM 口卡住
-        used_existing_for_boot = False
-        if self.disconnect_btn.isEnabled() and getattr(self.serial, 'ser', None):
-            try:
-                self._append_log("[FLASH] 通过当前连接发送 !BOOT…\n")
-                # 暂停轮询，避免读写竞争
-                self.timer.stop()
-                self.serial.ser.reset_input_buffer()
-                self.serial.ser.write(b"!BOOT\n")
-                self.serial.ser.flush()
-                t0 = time.time()
-                boot_ok = False
-                while time.time() - t0 < 2.0:
-                    line = self.serial.ser.readline().decode(errors='ignore')
-                    if line:
-                        self._append_log(line)
-                        if "JIG: BOOT OK" in line:
-                            boot_ok = True
-                            break
-                if not boot_ok:
-                    self._append_log("[FLASH] 未收到 JIG: BOOT OK（继续尝试烧录）\n")
-                used_existing_for_boot = True
-            except Exception as e:
-                self._append_log(f"[FLASH] 通过当前连接发送 !BOOT 失败: {e}\n")
-            finally:
-                # 不论成功与否，都主动断开，为后续 esptool 让路
-                self._on_disconnect()
-        else:
-            # 未连接则保持原有流程，在线程里用临时句柄发送 !BOOT
-            pass
-
-        # 加锁 UI，防误操作
-        self._set_ui_busy(True)
-        # 主线程先给出提示，避免用户误以为无响应
-        self._append_log("[FLASH] 正在启动烧录线程，请稍候…\n")
-
+        self._append_log(f"[FLASH] 开始烧录: {flash_port}\n")
+        
+        # 在后台线程中执行
         def run_flash():
-            # 在独立线程中执行 esptool，避免阻塞 UI
             try:
-                # 控制台也打一份，方便从 VSCode 终端确认线程已启动
-                print("[FLASH][DBG] worker thread started")
-                self._append_log_async(f"[FLASH] 使用端口 {port}，准备进入下载模式...\n")
+                # 1. 发送 !BOOT (复用控制口)
+                if ctrl_port and self.ctrl_serial.ser:
+                    print("[FLASH][DBG] sending !BOOT")
+                    self.ctrl_serial.ser.write(b"!BOOT\n")
+                    self.ctrl_serial.ser.flush()
+                    self._append_log_async("[FLASH] !BOOT 已发送\n")
+                    time.sleep(0.3)
 
-                # 预步骤：通过治具命令进入下载模式（不依赖 DTR/RTS）
-                if serial is None:
-                    self._append_log_async("[FLASH] PySerial 不可用，无法发送 BOOT/RUN 控制命令。\n")
-                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "缺少依赖", "未找到 pyserial。请先执行: pip install pyserial"))
-                    return
-                if not used_existing_for_boot:
-                    try:
-                        print("[FLASH][DBG] opening serial for !BOOT...")
-                        tmp = serial.Serial(port=port, baudrate=115200, timeout=0.2)
-                        tmp.reset_input_buffer()
-                        tmp.write(b"!BOOT\n")
-                        tmp.flush()
-                        print("[FLASH][DBG] !BOOT sent, waiting for JIG reply...")
-                        t0 = time.time()
-                        boot_ok = False
-                        while time.time() - t0 < 2.0:
-                            line = tmp.readline().decode(errors='ignore')
-                            if line:
-                                self._append_log_async(line)
-                                if "JIG: BOOT OK" in line:
-                                    boot_ok = True
-                                    break
-                        if not boot_ok:
-                            self._append_log_async("[FLASH] 未收到 JIG: BOOT OK，继续尝试烧录（可能也能成功）...\n")
-                    except Exception as e:
-                        self._append_log_async(f"[FLASH] 发送 BOOT 命令失败: {e}\n")
-                    finally:
-                        try:
-                            tmp.close()
-                        except Exception:
-                            pass
-                else:
-                    self._append_log_async("[FLASH] 已完成进入下载模式（复用现有连接发送）\n")
-
-                print("[FLASH][DBG] launching esptool...")
-                self._append_log_async(f"[FLASH] 开始烧录...\n")
+                # 2. 关闭烧录口
+                print("[FLASH][DBG] closing flash port")
+                if self.flash_serial.ser:
+                    self.flash_serial.ser.close()
+                    self.flash_serial.ser = None
+                time.sleep(0.5)
+                
+                # 3. 烧录
                 abs_args = str(arg_file.resolve())
-                try:
-                    # 打印参数文件的前几行，帮助排查参数问题
-                    with open(abs_args, 'r', encoding='utf-8', errors='ignore') as f:
-                        head = ''.join([next(f) for _ in range(5)])
-                    self._append_log_async("[FLASH] flash_project_args head:\n" + head + "\n")
-                except Exception:
-                    pass
                 cmd = [
-                    sys.executable, "-u", "-m", "esptool",
-                    "-vv", "--trace",
+                    sys.executable, "-m", "esptool",
                     "--chip", "esp32s3",
-                    "--port", port,
-                    "--baud", "115200",
+                    "--port", flash_port,
+                    "-b", "921600",
                     "--before", "no_reset",
                     "--after", "no_reset",
-                    "--no-stub",
                     "write_flash",
                     "@" + abs_args,
                 ]
-                self._append_log_async("[FLASH] cmd: " + " ".join(cmd) + "\n")
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-                print("[FLASH][DBG] esptool started, reading output...")
-                for line in proc.stdout:
-                    self._append_log_async(line)
-                ret = proc.wait()
-                try:
-                    # 读取可能未按行结束的残余输出
-                    remainder = proc.stdout.read() or ""
-                    if remainder:
-                        self._append_log_async(remainder)
-                except Exception:
-                    pass
-                print(f"[FLASH][DBG] esptool exited with {ret}")
+                
+                print("[FLASH][DBG] starting esptool")
+                print(f"[FLASH][DBG] cmd: {' '.join(cmd)}")
+                self._append_log_async("[FLASH] 正在烧录...\n")
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
+                                      text=True, cwd=arg_file.parent)
+                
+                # 实时读取输出（避免缓冲区满导致阻塞）
+                output_lines = []
+                while True:
+                    line = proc.stdout.readline()
+                    if not line and proc.poll() is not None:
+                        break
+                    if line:
+                        output_lines.append(line)
+                        print(line.rstrip())  # 实时打印到终端
+                
+                ret = proc.returncode
+                out = ''.join(output_lines)
+                self._append_log_async(out)
+                self._append_log_async(f"[FLASH] 烧录完成，返回码: {ret}\n")
+                print(f"[FLASH][DBG] esptool ret={ret}")
+                
+                # 4. 发送 !RUN (复用控制口)
+                if ret == 0 and ctrl_port and self.ctrl_serial.ser:
+                    print("[FLASH][DBG] sending !RUN")
+                    self.ctrl_serial.ser.write(b"!RUN\n")
+                    self.ctrl_serial.ser.flush()
+                    self._append_log_async("[FLASH] !RUN 已发送\n")
+                    time.sleep(1.5)  # 等待 DUT 复位完成
+                
+                # 5. 重新打开烧录口（直接在线程里重连，不用 QTimer）
                 if ret == 0:
-                    self._append_log_async("[FLASH] 成功，发送 RUN 命令复位进入应用...\n")
-
-                    # 发送 RUN 命令让 DUT 进入应用
-                    try:
-                        print("[FLASH][DBG] opening serial for !RUN...")
-                        tmp2 = serial.Serial(port=port, baudrate=115200, timeout=0.2)
-                        tmp2.reset_input_buffer()
-                        tmp2.write(b"!RUN\n")
-                        tmp2.flush()
-                        t0 = time.time()
-                        while time.time() - t0 < 0.8:
-                            line = tmp2.readline().decode(errors='ignore')
-                            if line:
-                                self._append_log_async(line)
-                    except Exception as e:
-                        self._append_log_async(f"[FLASH] 发送 RUN 命令失败: {e}\n")
-                    finally:
-                        try:
-                            tmp2.close()
-                        except Exception:
-                            pass
-
-                    self._append_log_async("[FLASH] 准备重新连接串口并等待自测结果...\n")
-                    # 重新连接串口（Windows 可能需要时间释放端口，加入重试）
+                    print(f"[FLASH][DBG] reopening {flash_port}")
+                    self._append_log_async("[FLASH] 重新打开烧录口...\n")
+                    
+                    # 添加重试逻辑（Windows 可能需要时间释放端口）
                     ok = False
-                    for _ in range(20):  # 最长约 5 秒
-                        ok = self.serial.open(port, 115200)
+                    for i in range(20):  # 最多重试 20 次，共 5 秒
+                        ok = self.flash_serial.open(flash_port, 115200)
                         if ok:
+                            self._append_log_async(f"[FLASH] 烧录口已重新打开（尝试 {i+1} 次），等待自测结果...\n")
+                            print(f"[FLASH][DBG] flash port reopened successfully on attempt {i+1}")
                             break
                         time.sleep(0.25)
-                    if ok:
-                        # 开始轮询
-                        QTimer.singleShot(0, self.timer.start)
-                        QTimer.singleShot(0, lambda: self.connect_btn.setEnabled(False))
-                        QTimer.singleShot(0, lambda: self.disconnect_btn.setEnabled(True))
-                        # 启动等待窗口/超时（例如 40 秒）
-                        self._awaiting_result = True
-                        self._await_deadline_ms = int(time.time() * 1000) + 40_000
-                        self._append_log_async("[FLASH] 串口已重连，等待 DUT 打印 SELFTEST SUMMARY JSON...\n")
-                    else:
-                        self._append_log_async(f"[FLASH] 重新打开串口失败: {port}\n")
-                        QTimer.singleShot(0, lambda: QMessageBox.critical(self, "连接失败", f"无法重新打开串口: {port}"))
+                    
+                    if not ok:
+                        self._append_log_async("[FLASH] 重新打开失败，请手动重新连接！\n")
+                        print("[FLASH][DBG] flash port reopen failed after 20 retries")
                 else:
-                    # 附带一次诊断：读取 chip_id，帮助判断是端口占用还是 ROM 沟通失败
-                    self._append_log_async(f"[FLASH] 失败，返回码 {ret}（尝试诊断 chip_id）\n")
-                    diag = [
-                        sys.executable, "-u", "-m", "esptool",
-                        "--chip", "esp32s3", "--port", port, "--baud", "921600",
-                        "--before", "no_reset", "--after", "no_reset",
-                        "chip_id",
-                    ]
-                    self._append_log_async("[FLASH] diag: " + " ".join(diag) + "\n")
-                    try:
-                        dproc = subprocess.Popen(diag, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                        out = dproc.communicate(timeout=5)[0]
-                        self._append_log_async(out)
-                    except Exception as e:
-                        self._append_log_async(f"[FLASH] diag error: {e}\n")
-                    QTimer.singleShot(0, lambda: QMessageBox.critical(self, "烧录失败", f"esptool 返回码 {ret}"))
-            except FileNotFoundError:
-                self._append_log_async("[FLASH] 未找到 esptool（请安装 esptool 并确保 Python 可执行）。\n")
-                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "缺少依赖", "未找到 esptool。请先执行: pip install esptool"))
+                    self._append_log_async(f"[FLASH] 烧录失败，返回码 {ret}\n")
+                    
             except Exception as e:
                 self._append_log_async(f"[FLASH] 异常: {e}\n")
-                QTimer.singleShot(0, lambda: QMessageBox.critical(self, "异常", str(e)))
-            finally:
-                # 解锁 UI（在主线程）
-                QTimer.singleShot(0, lambda: self._set_ui_busy(False))
+                print(f"[FLASH][DBG] exception: {e}")
+                import traceback
+                traceback.print_exc()
 
         threading.Thread(target=run_flash, daemon=True).start()
+
 
     def _append_log_async(self, text: str):
         QTimer.singleShot(0, lambda: self._append_log(text))
