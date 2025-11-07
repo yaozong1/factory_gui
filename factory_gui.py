@@ -198,7 +198,11 @@ class FactoryGUI(QMainWindow):
                     return json.load(f)
             except Exception as e:
                 print(f"[CONFIG] 加载配置失败: {e}")
-        return {"last_flash_args": None}
+        return {
+            "last_flash_args": None,
+            "last_ctrl_port": None,
+            "last_flash_port": None
+        }
 
     def _save_config(self):
         """保存配置文件"""
@@ -401,7 +405,11 @@ class FactoryGUI(QMainWindow):
             combo.clear()
         ports = SerialClient.list_ports()
         
-        # 智能选择：COM24 作为控制口，COM6 作为烧录口
+        # 从配置获取上次使用的端口
+        last_ctrl = self.config.get("last_ctrl_port")
+        last_flash = self.config.get("last_flash_port")
+        
+        # 智能选择优先级：1. 配置记忆 2. COM24/COM6 默认值
         ctrl_default = None
         flash_default = None
         
@@ -409,11 +417,15 @@ class FactoryGUI(QMainWindow):
             self.ctrl_combo.addItem(p)
             self.flash_combo.addItem(p)
             
-            # 优先选择 COM24 作为控制口（S3 USB-Serial-JTAG）
-            if "COM24" in p:
+            # 优先使用配置中记忆的端口
+            if last_ctrl and last_ctrl in p:
                 ctrl_default = p
-            # 优先选择 COM6 作为烧录口（CH340）
-            elif "COM6" in p:
+            elif not ctrl_default and "COM24" in p:
+                ctrl_default = p
+            
+            if last_flash and last_flash in p:
+                flash_default = p
+            elif not flash_default and "COM6" in p:
                 flash_default = p
         
         if not ports:
@@ -496,6 +508,12 @@ class FactoryGUI(QMainWindow):
         self.connect_btn.setEnabled(False)
         self.disconnect_btn.setEnabled(True)
         self._append_log(f"[INFO] 已连接控制口 {ctrl_port} + 刷机口 {flash_port}\n")
+        
+        # 保存端口配置
+        self.config["last_ctrl_port"] = ctrl_port
+        self.config["last_flash_port"] = flash_port
+        self._save_config()
+        self._append_log(f"[CONFIG] 已记忆端口配置\n")
 
     def _on_connect_flash(self):
         # 连接刷机口（CH340），用于读取 DUT 输出的自测结果
