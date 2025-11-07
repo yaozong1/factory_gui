@@ -26,6 +26,7 @@ except Exception as e:
 
 
 SUMMARY_MARK = "SELFTEST SUMMARY:"
+CONFIG_FILE = Path("factory_gui_config.json")  # 配置文件路径
 
 def extract_json_blocks(buf: str):
     blocks = []
@@ -180,8 +181,45 @@ class FactoryGUI(QMainWindow):
         self._awaiting_result = False
         self._await_deadline_ms = 0
 
+        # 加载配置
+        self.config = self._load_config()
+
         self._build_ui()
         self._refresh_ports()
+        
+        # 启动时自动连接（如果找到了 COM24 和 COM6）
+        QTimer.singleShot(500, self._auto_connect)
+
+    def _load_config(self):
+        """加载配置文件"""
+        if CONFIG_FILE.exists():
+            try:
+                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"[CONFIG] 加载配置失败: {e}")
+        return {"last_flash_args": None}
+
+    def _save_config(self):
+        """保存配置文件"""
+        try:
+            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            print(f"[CONFIG] 配置已保存: {self.config}")
+        except Exception as e:
+            print(f"[CONFIG] 保存配置失败: {e}")
+
+    def _auto_connect(self):
+        """启动时自动连接控制口和烧录口"""
+        ctrl_port = self.ctrl_combo.currentText()
+        flash_port = self.flash_combo.currentText()
+        
+        # 检查是否找到了有效端口
+        if ctrl_port and not ctrl_port.startswith("<") and flash_port and not flash_port.startswith("<"):
+            self._append_log(f"[AUTO] 自动连接: 控制口={ctrl_port}, 烧录口={flash_port}\n")
+            self._on_connect()
+        else:
+            self._append_log("[AUTO] 未找到有效端口，请手动选择并连接\n")
 
     def _set_ui_busy(self, busy: bool):
         # 仅在主线程调用
@@ -216,14 +254,19 @@ class FactoryGUI(QMainWindow):
         self.refresh_btn = QPushButton("刷新串口")
         self.connect_btn = QPushButton("连接")
         self.disconnect_btn = QPushButton("断开")
-        self.simulate_btn = QPushButton("模拟JSON")
-        self.flash_btn = QPushButton("烧录并等待")
+        self.flash_btn = QPushButton("🔥 烧录并等待")
+        
+        # 设置主按钮样式
+        self.flash_btn.setStyleSheet("QPushButton { font-size: 14pt; font-weight: bold; padding: 10px; background-color: #4CAF50; color: white; }")
+        
         # 新增：分步诊断/操作按钮
+        self.simulate_btn = QPushButton("模拟JSON")
         self.boot_btn = QPushButton("进下载(!BOOT)")
         self.run_btn = QPushButton("运行(!RUN)")
         self.flash_only_btn = QPushButton("仅刷写(esptool)")
         self.chipid_btn = QPushButton("esptool chip_id")
         self.disconnect_btn.setEnabled(False)
+        
         top.addWidget(QLabel("控制口(治具):"))
         top.addWidget(self.ctrl_combo, 1)
         top.addWidget(QLabel("刷机口(DUT):"))
@@ -231,13 +274,46 @@ class FactoryGUI(QMainWindow):
         top.addWidget(self.refresh_btn)
         top.addWidget(self.connect_btn)
         top.addWidget(self.disconnect_btn)
-        top.addWidget(self.simulate_btn)
-        top.addWidget(self.flash_btn)
-        top.addWidget(self.boot_btn)
-        top.addWidget(self.run_btn)
-        top.addWidget(self.flash_only_btn)
-        top.addWidget(self.chipid_btn)
         root.addLayout(top)
+        
+        # 烧录文件显示栏
+        flash_file_layout = QHBoxLayout()
+        flash_file_layout.addWidget(QLabel("烧录文件:"))
+        self.flash_file_label = QLabel("(未选择)")
+        self.flash_file_label.setStyleSheet("QLabel { padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }")
+        self.change_file_btn = QPushButton("更换文件")
+        self.change_file_btn.clicked.connect(self._on_change_flash_file)
+        flash_file_layout.addWidget(self.flash_file_label, 1)
+        flash_file_layout.addWidget(self.change_file_btn)
+        root.addLayout(flash_file_layout)
+        
+        # 启动时加载上次的文件路径
+        last_path = self.config.get("last_flash_args")
+        if last_path and Path(last_path).exists():
+            self.flash_file_label.setText(last_path)
+            self.flash_file_label.setStyleSheet("QLabel { padding: 5px; background-color: #e8f5e9; border: 1px solid #4CAF50; color: #2e7d32; }")
+        
+        # 主功能按钮（大按钮）
+        main_btn_layout = QHBoxLayout()
+        main_btn_layout.addWidget(self.flash_btn)
+        root.addLayout(main_btn_layout)
+        
+        # 高级功能区（可折叠）- 默认隐藏
+        self.show_advanced_btn = QPushButton("▼ 显示高级功能")
+        self.show_advanced_btn.setCheckable(True)
+        self.show_advanced_btn.clicked.connect(self._toggle_advanced)
+        root.addWidget(self.show_advanced_btn)
+        
+        self.advanced_widget = QWidget()
+        advanced_layout = QHBoxLayout(self.advanced_widget)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        advanced_layout.addWidget(self.simulate_btn)
+        advanced_layout.addWidget(self.boot_btn)
+        advanced_layout.addWidget(self.run_btn)
+        advanced_layout.addWidget(self.flash_only_btn)
+        advanced_layout.addWidget(self.chipid_btn)
+        root.addWidget(self.advanced_widget)
+        self.advanced_widget.hide()  # 默认隐藏
 
         # 中部：结果面板
         panel = QGridLayout()
@@ -324,12 +400,71 @@ class FactoryGUI(QMainWindow):
         for combo in (self.ctrl_combo, self.flash_combo):
             combo.clear()
         ports = SerialClient.list_ports()
+        
+        # 智能选择：COM24 作为控制口，COM6 作为烧录口
+        ctrl_default = None
+        flash_default = None
+        
         for p in ports:
             self.ctrl_combo.addItem(p)
             self.flash_combo.addItem(p)
+            
+            # 优先选择 COM24 作为控制口（S3 USB-Serial-JTAG）
+            if "COM24" in p:
+                ctrl_default = p
+            # 优先选择 COM6 作为烧录口（CH340）
+            elif "COM6" in p:
+                flash_default = p
+        
         if not ports:
             self.ctrl_combo.addItem("<无串口>")
             self.flash_combo.addItem("<无串口>")
+        else:
+            # 自动选择默认端口
+            if ctrl_default:
+                idx = self.ctrl_combo.findText(ctrl_default)
+                if idx >= 0:
+                    self.ctrl_combo.setCurrentIndex(idx)
+                    self._append_log(f"[AUTO] 自动选择控制口: {ctrl_default}\n")
+            
+            if flash_default:
+                idx = self.flash_combo.findText(flash_default)
+                if idx >= 0:
+                    self.flash_combo.setCurrentIndex(idx)
+                    self._append_log(f"[AUTO] 自动选择烧录口: {flash_default}\n")
+
+    def _toggle_advanced(self):
+        """切换高级功能显示/隐藏"""
+        if self.advanced_widget.isVisible():
+            self.advanced_widget.hide()
+            self.show_advanced_btn.setText("▼ 显示高级功能")
+        else:
+            self.advanced_widget.show()
+            self.show_advanced_btn.setText("▲ 隐藏高级功能")
+
+    def _on_change_flash_file(self):
+        """更换烧录文件"""
+        caption = "选择 flash_project_args (ESP-IDF 构建生成)"
+        last_path = self.config.get("last_flash_args")
+        default_dir = str(Path(last_path).parent) if last_path and Path(last_path).exists() else os.getcwd()
+        
+        path, _ = QFileDialog.getOpenFileName(self, caption, default_dir, "flash_project_args;*.*")
+        
+        if not path:
+            return
+            
+        p = Path(path)
+        if p.name != "flash_project_args":
+            QMessageBox.warning(self, "文件不匹配", "请选择 ESP-IDF 构建目录下的 flash_project_args 文件。")
+            return
+        
+        # 保存到配置并更新显示
+        abs_path = str(p.resolve())
+        self.config["last_flash_args"] = abs_path
+        self._save_config()
+        self.flash_file_label.setText(abs_path)
+        self.flash_file_label.setStyleSheet("QLabel { padding: 5px; background-color: #e8f5e9; border: 1px solid #4CAF50; color: #2e7d32; }")
+        self._append_log(f"[CONFIG] 已更新烧录文件: {abs_path}\n")
 
     def _on_connect(self):
         # 同时连接控制口和刷机口
@@ -738,16 +873,20 @@ class FactoryGUI(QMainWindow):
 
     # 选择 flash_project_args 文件（推荐）
     def _pick_flash_args_file(self) -> Optional[Path]:
-        caption = "选择 flash_project_args (ESP-IDF 构建生成)"
-        default_dir = os.getcwd()
-        path, _ = QFileDialog.getOpenFileName(self, caption, default_dir, "flash_project_args;*.*")
-        if not path:
-            return None
-        p = Path(path)
-        if p.name != "flash_project_args":
-            QMessageBox.warning(self, "文件不匹配", "请选择 ESP-IDF 构建目录下的 flash_project_args 文件。")
-            return None
-        return p
+        """获取烧录参数文件，使用配置中记忆的路径"""
+        last_path = self.config.get("last_flash_args")
+        
+        # 如果有记忆且文件存在，直接使用
+        if last_path and Path(last_path).exists():
+            return Path(last_path)
+        
+        # 否则提示选择文件
+        QMessageBox.warning(
+            self,
+            "未选择烧录文件",
+            "请先点击「更换文件」按钮选择 flash_project_args 文件"
+        )
+        return None
 
     def _reconnect_and_wait(self, flash_port: str, ctrl_port: str = None):
         """在主线程中重连刷机口并启动定时器等待自测结果"""
