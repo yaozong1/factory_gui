@@ -87,6 +87,8 @@ class SelftestResult:
     gnss_bytes: int = 0
     battery_ok: bool = False
     battery_v: float = 0.0
+    ign_tested: bool = False
+    ign_pass: bool = False
 
     @property
     def overall(self) -> bool:
@@ -97,6 +99,7 @@ class SelftestResult:
             self.can_pass,
             self.gnss_ok,
             self.battery_ok,
+            self.ign_pass,  # 添加IGN到overall判断
         ])
 
 
@@ -369,6 +372,11 @@ class FactoryGUI(QMainWindow):
         panel.addWidget(QLabel("Battery/ADC"), r, 0)
         panel.addWidget(self.lbl_bat, r, 1)
         panel.addWidget(self.lbl_bat_v, r, 2)
+        r += 1
+
+        self.lbl_ign = StatusLabel("-")
+        panel.addWidget(QLabel("IGN Opto"), r, 0)
+        panel.addWidget(self.lbl_ign, r, 1)
         r += 1
 
         # 右侧/下方：8路电压显示
@@ -902,6 +910,11 @@ class FactoryGUI(QMainWindow):
             res.battery_v = float(b.get("voltage", 0.0) or 0.0)
         except Exception:
             res.battery_v = 0.0
+        
+        # 解析 IGN 光耦测试结果
+        ign = data.get("ign", {}) or {}
+        res.ign_tested = bool(ign.get("tested", False))
+        res.ign_pass = bool(ign.get("pass", False))
 
         # 更新界面
         self.lbl_overall.set_state(res.overall)
@@ -916,6 +929,7 @@ class FactoryGUI(QMainWindow):
         self.lbl_gnss_info.setText(f"bytes={res.gnss_bytes}")
         self.lbl_bat.set_state(res.battery_ok)
         self.lbl_bat_v.setText(f"V={res.battery_v:.2f}V")
+        self.lbl_ign.set_state(res.ign_pass)  # 更新IGN光耦测试状态
 
         # 如果正处于“烧录并等待”的等待阶段，第一帧解析成功即完成
         if self._awaiting_result:
@@ -931,7 +945,8 @@ class FactoryGUI(QMainWindow):
             "  \"rs485\": { \"inited\": true, \"written\": 8, \"rx_bytes\": 8, \"pass\": true },\n"
             "  \"can\": { \"inited\": true, \"started\": true, \"state\": 1, \"pass\": true },\n"
             "  \"gnss\": { \"uart_ok\": true, \"bytes\": 64 },\n"
-            "  \"battery\": { \"ok\": true, \"voltage\": 3.97 }\n"
+            "  \"battery\": { \"ok\": true, \"voltage\": 3.97 },\n"
+            "  \"ign\": { \"tested\": true, \"pass\": true }\n"
             "}\n"
         )
         self._append_log(demo)
