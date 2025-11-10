@@ -379,6 +379,11 @@ class FactoryGUI(QMainWindow):
         panel.addWidget(self.lbl_ign, r, 1)
         r += 1
 
+        self.lbl_im = StatusLabel("-")
+        panel.addWidget(QLabel("IM Opto"), r, 0)
+        panel.addWidget(self.lbl_im, r, 1)
+        r += 1
+
         # 右侧/下方：8路电压显示
         vbox2 = QVBoxLayout()
         voltage_group = QGroupBox("8路电压采集 (K10-3U8)")
@@ -805,6 +810,13 @@ class FactoryGUI(QMainWindow):
                     
                     self.volt_table.item(i, 2).setText(status)
                     self.volt_table.item(i, 2).setBackground(color)
+            
+            # 解析 IM 测试结果
+            if "im_tested" in data and "im_pass" in data:
+                im_tested = bool(data.get("im_tested", False))
+                im_pass = bool(data.get("im_pass", False))
+                if im_tested:
+                    self.lbl_im.set_state(im_pass)
                     
         except json.JSONDecodeError as e:
             print(f"[VOLTAGE] JSON 解析失败: {e}")
