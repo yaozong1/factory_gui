@@ -371,17 +371,22 @@ class FactoryGUI(QMainWindow):
         panel.addWidget(self.lbl_bat_v, r, 2)
         r += 1
 
-        # 右侧/下方：8路电压占位
+        # 右侧/下方：8路电压显示
         vbox2 = QVBoxLayout()
+        voltage_group = QGroupBox("8路电压采集 (K10-3U8)")
+        voltage_layout = QVBoxLayout()
         self.volt_table = QTableWidget(8, 3)
-        self.volt_table.setHorizontalHeaderLabels(["Channel", "Voltage(V)", "Status"])
+        self.volt_table.setHorizontalHeaderLabels(["通道", "电压(V)", "状态"])
+        self.volt_table.setColumnWidth(0, 80)
+        self.volt_table.setColumnWidth(1, 100)
+        self.volt_table.setColumnWidth(2, 80)
         for i in range(8):
-            self.volt_table.setItem(i, 0, QTableWidgetItem(f"CH{i+1}"))
+            self.volt_table.setItem(i, 0, QTableWidgetItem(f"AI{i+1}"))
             self.volt_table.setItem(i, 1, QTableWidgetItem("-"))
             self.volt_table.setItem(i, 2, QTableWidgetItem("-"))
-        vbox2.addWidget(QLabel("8x Voltage (placeholder)"))
-        vbox2.addWidget(self.volt_table)
-        root.addLayout(vbox2)
+        voltage_layout.addWidget(self.volt_table)
+        voltage_group.setLayout(voltage_layout)
+        root.addWidget(voltage_group)
 
         # 底部：日志窗口
         self.log = QTextEdit()
@@ -753,8 +758,60 @@ class FactoryGUI(QMainWindow):
             self._append_log(f"[CHIP_ID] 异常: {e}\n")
             QMessageBox.critical(self, "异常", str(e))
 
+    def _parse_voltage_adc(self, text: str):
+        """解析电压 ADC JSON 数据
+        格式: VOLTAGE_ADC: {"ch1":4620,"ch2":0,...,"ch8":0}
+        """
+        pattern = r'VOLTAGE_ADC:\s*(\{[^}]+\})'
+        match = re.search(pattern, text)
+        if not match:
+            return
+        
+        try:
+            json_str = match.group(1)
+            data = json.loads(json_str)
+            
+            # 更新电压表格
+            for i in range(8):
+                ch_key = f"ch{i+1}"
+                if ch_key in data:
+                    voltage_mv = int(data[ch_key])
+                    voltage_v = voltage_mv / 1000.0
+                    
+                    # 更新电压值
+                    self.volt_table.item(i, 1).setText(f"{voltage_v:.3f}")
+                    
+                    # 更新状态（根据电压范围判断）
+                    status = "OK"
+                    color = QColor(144, 238, 144)  # 浅绿色
+                    
+                    if voltage_mv > 10000:  # 超过 10V
+                        status = "过压"
+                        color = QColor(255, 182, 193)  # 浅红色
+                    elif voltage_mv < 0:
+                        status = "异常"
+                        color = QColor(255, 182, 193)  # 浅红色
+                    elif voltage_mv == 0:
+                        status = "未接"
+                        color = QColor(211, 211, 211)  # 浅灰色
+                    
+                    self.volt_table.item(i, 2).setText(status)
+                    self.volt_table.item(i, 2).setBackground(color)
+                    
+        except json.JSONDecodeError as e:
+            print(f"[VOLTAGE] JSON 解析失败: {e}")
+        except Exception as e:
+            print(f"[VOLTAGE] 更新电压表失败: {e}")
+
     def on_tick(self):
-        # 从刷机口读取 DUT 输出
+        # 从控制口读取治具输出（电压数据从这里来）
+        ctrl_chunk = self.ctrl_serial.read_lines()
+        if ctrl_chunk:
+            self._append_log(ctrl_chunk)
+            # 解析电压 ADC 数据 (VOLTAGE_ADC: {...})
+            self._parse_voltage_adc(ctrl_chunk)
+        
+        # 从刷机口读取 DUT 输出（自测结果从这里来）
         chunk = self.flash_serial.read_lines()
         if not chunk:
             # 减少调试输出：只在每 100 次打印一次
@@ -774,6 +831,7 @@ class FactoryGUI(QMainWindow):
             return
         self._append_log(chunk)
         self.flash_serial.buffer += chunk
+        
         # 查找并解析 JSON 摘要
         # 使用括号平衡算法抽取完整 JSON 块，避免正则在嵌套时截断
         blocks = extract_json_blocks(self.flash_serial.buffer)
