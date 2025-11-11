@@ -200,7 +200,7 @@ class FactoryGUI(QMainWindow):
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception as e:
-                print(f"[CONFIG] 加载配置失败: {e}")
+                print(f"[CONFIG] Load config failed: {e}")
         return {
             "last_flash_args": None,
             "last_ctrl_port": None,
@@ -212,9 +212,9 @@ class FactoryGUI(QMainWindow):
         try:
             with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
-            print(f"[CONFIG] 配置已保存: {self.config}")
+            print(f"[CONFIG] Config saved: {self.config}")
         except Exception as e:
-            print(f"[CONFIG] 保存配置失败: {e}")
+            print(f"[CONFIG] Save config failed: {e}")
 
     def _auto_connect(self):
         """启动时自动连接控制口和烧录口"""
@@ -223,10 +223,10 @@ class FactoryGUI(QMainWindow):
         
         # 检查是否找到了有效端口
         if ctrl_port and not ctrl_port.startswith("<") and flash_port and not flash_port.startswith("<"):
-            self._append_log(f"[AUTO] 自动连接: 控制口={ctrl_port}, 烧录口={flash_port}\n")
+            self._append_log(f"[AUTO] Auto connect: Ctrl={ctrl_port}, Flash={flash_port}\n")
             self._on_connect()
         else:
-            self._append_log("[AUTO] 未找到有效端口，请手动选择并连接\n")
+            self._append_log("[AUTO] No valid port found, please select and connect manually\n")
 
     def _set_ui_busy(self, busy: bool):
         # 仅在主线程调用
@@ -258,25 +258,25 @@ class FactoryGUI(QMainWindow):
         top = QHBoxLayout()
         self.ctrl_combo = QComboBox()
         self.flash_combo = QComboBox()
-        self.refresh_btn = QPushButton("刷新串口")
-        self.connect_btn = QPushButton("连接")
-        self.disconnect_btn = QPushButton("断开")
-        self.flash_btn = QPushButton("🔥 烧录并等待")
+        self.refresh_btn = QPushButton("Refresh Ports")
+        self.connect_btn = QPushButton("Connect")
+        self.disconnect_btn = QPushButton("Disconnect")
+        self.flash_btn = QPushButton("🔥 Flash & Wait")
         
         # 设置主按钮样式
         self.flash_btn.setStyleSheet("QPushButton { font-size: 14pt; font-weight: bold; padding: 10px; background-color: #4CAF50; color: white; }")
         
         # 新增：分步诊断/操作按钮
-        self.simulate_btn = QPushButton("模拟JSON")
-        self.boot_btn = QPushButton("进下载(!BOOT)")
-        self.run_btn = QPushButton("运行(!RUN)")
-        self.flash_only_btn = QPushButton("仅刷写(esptool)")
+        self.simulate_btn = QPushButton("Simulate JSON")
+        self.boot_btn = QPushButton("Enter Boot(!BOOT)")
+        self.run_btn = QPushButton("Run(!RUN)")
+        self.flash_only_btn = QPushButton("Flash Only(esptool)")
         self.chipid_btn = QPushButton("esptool chip_id")
         self.disconnect_btn.setEnabled(False)
         
-        top.addWidget(QLabel("控制口(治具):"))
+        top.addWidget(QLabel("Control Port(Jig):"))
         top.addWidget(self.ctrl_combo, 1)
-        top.addWidget(QLabel("刷机口(DUT):"))
+        top.addWidget(QLabel("Flash Port(DUT):"))
         top.addWidget(self.flash_combo, 1)
         top.addWidget(self.refresh_btn)
         top.addWidget(self.connect_btn)
@@ -285,10 +285,10 @@ class FactoryGUI(QMainWindow):
         
         # 烧录文件显示栏
         flash_file_layout = QHBoxLayout()
-        flash_file_layout.addWidget(QLabel("烧录文件:"))
-        self.flash_file_label = QLabel("(未选择)")
+        flash_file_layout.addWidget(QLabel("Flash File:"))
+        self.flash_file_label = QLabel("(Not Selected)")
         self.flash_file_label.setStyleSheet("QLabel { padding: 5px; background-color: #f0f0f0; border: 1px solid #ccc; }")
-        self.change_file_btn = QPushButton("更换文件")
+        self.change_file_btn = QPushButton("Change File")
         self.change_file_btn.clicked.connect(self._on_change_flash_file)
         flash_file_layout.addWidget(self.flash_file_label, 1)
         flash_file_layout.addWidget(self.change_file_btn)
@@ -306,7 +306,7 @@ class FactoryGUI(QMainWindow):
         root.addLayout(main_btn_layout)
         
         # 高级功能区（可折叠）- 默认隐藏
-        self.show_advanced_btn = QPushButton("▼ 显示高级功能")
+        self.show_advanced_btn = QPushButton("▼ Show Advanced")
         self.show_advanced_btn.setCheckable(True)
         self.show_advanced_btn.clicked.connect(self._toggle_advanced)
         root.addWidget(self.show_advanced_btn)
@@ -324,7 +324,7 @@ class FactoryGUI(QMainWindow):
 
         # 中部：结果面板
         panel = QGridLayout()
-        box = QGroupBox("自测结果")
+        box = QGroupBox("Selftest Results")
         box.setLayout(panel)
         root.addWidget(box)
 
@@ -386,10 +386,10 @@ class FactoryGUI(QMainWindow):
 
         # 右侧/下方：8路电压显示
         vbox2 = QVBoxLayout()
-        voltage_group = QGroupBox("8路电压采集 (K10-3U8)")
+        voltage_group = QGroupBox("8-CH Voltage (K10-3U8)")
         voltage_layout = QVBoxLayout()
         self.volt_table = QTableWidget(8, 3)
-        self.volt_table.setHorizontalHeaderLabels(["通道", "电压(V)", "状态"])
+        self.volt_table.setHorizontalHeaderLabels(["Channel", "Voltage(V)", "Status"])
         self.volt_table.setColumnWidth(0, 80)
         self.volt_table.setColumnWidth(1, 100)
         self.volt_table.setColumnWidth(2, 80)
@@ -404,7 +404,7 @@ class FactoryGUI(QMainWindow):
         # 底部：日志窗口
         self.log = QTextEdit()
         self.log.setReadOnly(True)
-        root.addWidget(QLabel("串口日志"))
+        root.addWidget(QLabel("Serial Log"))
         root.addWidget(self.log, 1)
 
         # 绑定事件
@@ -447,34 +447,34 @@ class FactoryGUI(QMainWindow):
                 flash_default = p
         
         if not ports:
-            self.ctrl_combo.addItem("<无串口>")
-            self.flash_combo.addItem("<无串口>")
+            self.ctrl_combo.addItem("<No Port>")
+            self.flash_combo.addItem("<No Port>")
         else:
             # 自动选择默认端口
             if ctrl_default:
                 idx = self.ctrl_combo.findText(ctrl_default)
                 if idx >= 0:
                     self.ctrl_combo.setCurrentIndex(idx)
-                    self._append_log(f"[AUTO] 自动选择控制口: {ctrl_default}\n")
+                    self._append_log(f"[AUTO] Auto-select control port: {ctrl_default}\n")
             
             if flash_default:
                 idx = self.flash_combo.findText(flash_default)
                 if idx >= 0:
                     self.flash_combo.setCurrentIndex(idx)
-                    self._append_log(f"[AUTO] 自动选择烧录口: {flash_default}\n")
+                    self._append_log(f"[AUTO] Auto-select flash port: {flash_default}\n")
 
     def _toggle_advanced(self):
         """切换高级功能显示/隐藏"""
         if self.advanced_widget.isVisible():
             self.advanced_widget.hide()
-            self.show_advanced_btn.setText("▼ 显示高级功能")
+            self.show_advanced_btn.setText("▼ Show Advanced")
         else:
             self.advanced_widget.show()
-            self.show_advanced_btn.setText("▲ 隐藏高级功能")
+            self.show_advanced_btn.setText("▲ Hide Advanced")
 
     def _on_change_flash_file(self):
         """更换烧录文件"""
-        caption = "选择 flash_project_args (ESP-IDF 构建生成)"
+        caption = "Select flash_project_args (ESP-IDF build output)"
         last_path = self.config.get("last_flash_args")
         default_dir = str(Path(last_path).parent) if last_path and Path(last_path).exists() else os.getcwd()
         
@@ -485,7 +485,7 @@ class FactoryGUI(QMainWindow):
             
         p = Path(path)
         if p.name != "flash_project_args":
-            QMessageBox.warning(self, "文件不匹配", "请选择 ESP-IDF 构建目录下的 flash_project_args 文件。")
+            QMessageBox.warning(self, "File Mismatch", "Please select 'flash_project_args' from ESP-IDF build directory.")
             return
         
         # 保存到配置并更新显示
@@ -502,23 +502,23 @@ class FactoryGUI(QMainWindow):
         flash_port = self.flash_combo.currentText()
         
         if not ctrl_port or ctrl_port.startswith("<"):
-            QMessageBox.warning(self, "连接失败", "请选择控制口")
+            QMessageBox.warning(self, "Connection Failed", "Please select control port")
             return
         if not flash_port or flash_port.startswith("<"):
-            QMessageBox.warning(self, "连接失败", "请选择刷机口")
+            QMessageBox.warning(self, "Connection Failed", "Please select flash port")
             return
             
         # 打开控制口
         ok1 = self.ctrl_serial.open(ctrl_port, 115200)
         if not ok1:
-            QMessageBox.critical(self, "连接失败", f"无法打开控制口: {ctrl_port}")
+            QMessageBox.critical(self, "Connection Failed", f"Cannot open control port: {ctrl_port}")
             return
             
         # 打开刷机口
         ok2 = self.flash_serial.open(flash_port, 115200)
         if not ok2:
             self.ctrl_serial.close()
-            QMessageBox.critical(self, "连接失败", f"无法打开刷机口: {flash_port}")
+            QMessageBox.critical(self, "Connection Failed", f"Cannot open flash port: {flash_port}")
             return
         
         # 启动定时器读取刷机口数据
@@ -537,11 +537,11 @@ class FactoryGUI(QMainWindow):
         # 连接刷机口（CH340），用于读取 DUT 输出的自测结果
         port = self.flash_combo.currentText()
         if not port or port.startswith("<"):
-            QMessageBox.warning(self, "连接失败", "未发现可用串口")
+            QMessageBox.warning(self, "Connection Failed", "No available port detected")
             return
         ok = self.flash_serial.open(port, 115200)
         if not ok:
-            QMessageBox.critical(self, "连接失败", f"无法打开串口: {port}")
+            QMessageBox.critical(self, "Connection Failed", f"Cannot open port: {port}")
             return
         self.timer.start()
         self.connect_btn.setEnabled(False)
@@ -566,7 +566,7 @@ class FactoryGUI(QMainWindow):
     def _on_boot_only(self):
         ctrl_port = self.ctrl_combo.currentText()
         if not ctrl_port or ctrl_port.startswith("<"):
-            QMessageBox.warning(self, "无控制口", "请选择控制口(USB-Serial-JTAG)")
+            QMessageBox.warning(self, "No Control Port", "Please select control port (USB-Serial-JTAG)")
             return
         try:
             self._append_log("[CTRL] 开始进入下载模式: !BOOT\n")
@@ -615,14 +615,14 @@ class FactoryGUI(QMainWindow):
                     except Exception:
                         pass
         except Exception as e:
-            QMessageBox.critical(self, "失败", f"发送 !BOOT 失败: {e}")
-            self._append_log(f"[CTRL] 发送 !BOOT 失败: {e}\n")
+            QMessageBox.critical(self, "Failed", f"Send !BOOT failed: {e}")
+            self._append_log(f"[CTRL] Send !BOOT failed: {e}\n")
 
     # 仅发送 !RUN（正常启动）
     def _on_run_only(self):
         ctrl_port = self.ctrl_combo.currentText()
         if not ctrl_port or ctrl_port.startswith("<"):
-            QMessageBox.warning(self, "无控制口", "请选择控制口(USB-Serial-JTAG)")
+            QMessageBox.warning(self, "No Control Port", "Please select control port (USB-Serial-JTAG)")
             return
         try:
             self._append_log("[CTRL] 发送运行命令: !RUN\n")
@@ -656,21 +656,21 @@ class FactoryGUI(QMainWindow):
                     except Exception:
                         pass
         except Exception as e:
-            QMessageBox.critical(self, "失败", f"发送 !RUN 失败: {e}")
-            self._append_log(f"[CTRL] 发送 !RUN 失败: {e}\n")
+            QMessageBox.critical(self, "Failed", f"Send !RUN failed: {e}")
+            self._append_log(f"[CTRL] Send !RUN failed: {e}\n")
 
     # 仅运行 esptool write_flash（不发送 !BOOT/!RUN）— 同步执行版本
     def _on_flash_only(self):
         flash_port = self.flash_combo.currentText()
         if not flash_port or flash_port.startswith("<"):
-            QMessageBox.warning(self, "无刷机口", "请选择刷机口(CH340)")
+            QMessageBox.warning(self, "No Flash Port", "Please select flash port (CH340)")
             return
         
         # 先检查是否已进入下载模式
         reply = QMessageBox.question(
             self, 
-            "准备刷写", 
-            '请确认已点击"进下载(!BOOT)"让 DUT 进入下载模式。\n\n是否继续刷写？',
+            "Ready to Flash", 
+            'Please confirm DUT entered boot mode via "Enter Boot(!BOOT)".\n\nContinue flashing?',
             QMessageBox.Yes | QMessageBox.No
         )
         if reply != QMessageBox.Yes:
@@ -753,11 +753,11 @@ class FactoryGUI(QMainWindow):
             out, _ = proc.communicate(timeout=30)
             self._append_log(out)
             ret = proc.returncode
-            self._append_log(f"[CHIP_ID] 退出码: {ret}\n")
+            self._append_log(f"[CHIP_ID] Exit code: {ret}\n")
             if ret == 0:
-                QMessageBox.information(self, "成功", "chip_id 读取成功")
+                QMessageBox.information(self, "Success", "chip_id read successfully")
             else:
-                QMessageBox.critical(self, "失败", f"chip_id 失败，返回码 {ret}")
+                QMessageBox.critical(self, "Failed", f"chip_id failed, exit code {ret}")
         except subprocess.TimeoutExpired:
             try:
                 proc.kill()
@@ -765,11 +765,11 @@ class FactoryGUI(QMainWindow):
                 self._append_log(out)
             except:
                 pass
-            self._append_log("[CHIP_ID] 超时（30秒）\n")
-            QMessageBox.critical(self, "超时", "chip_id 超时（30秒）")
+            self._append_log("[CHIP_ID] Timeout (30s)\n")
+            QMessageBox.critical(self, "Timeout", "chip_id timeout (30s)")
         except Exception as e:
-            self._append_log(f"[CHIP_ID] 异常: {e}\n")
-            QMessageBox.critical(self, "异常", str(e))
+            self._append_log(f"[CHIP_ID] Exception: {e}\n")
+            QMessageBox.critical(self, "Exception", str(e))
 
     def _parse_voltage_adc(self, text: str):
         """解析电压 ADC JSON 数据
@@ -799,13 +799,13 @@ class FactoryGUI(QMainWindow):
                     color = QColor(144, 238, 144)  # 浅绿色
                     
                     if voltage_mv > 10000:  # 超过 10V
-                        status = "过压"
+                        status = "OverV"
                         color = QColor(255, 182, 193)  # 浅红色
                     elif voltage_mv < 0:
-                        status = "异常"
+                        status = "Error"
                         color = QColor(255, 182, 193)  # 浅红色
                     elif voltage_mv == 0:
-                        status = "未接"
+                        status = "N/A"
                         color = QColor(211, 211, 211)  # 浅灰色
                     
                     self.volt_table.item(i, 2).setText(status)
@@ -888,7 +888,7 @@ class FactoryGUI(QMainWindow):
         if self._awaiting_result and self._await_deadline_ms:
             if int(time.time() * 1000) > self._await_deadline_ms:
                 self._awaiting_result = False
-                QMessageBox.warning(self, "等待超时", "烧录完成后未在超时时间内收到自测结果。")
+                QMessageBox.warning(self, "Wait Timeout", "No selftest result received after flashing timeout.")
 
     def _apply_summary(self, data: dict):
         # 容错解析
@@ -986,8 +986,8 @@ class FactoryGUI(QMainWindow):
         # 否则提示选择文件
         QMessageBox.warning(
             self,
-            "未选择烧录文件",
-            "请先点击「更换文件」按钮选择 flash_project_args 文件"
+            "No Flash File Selected",
+            "Please click 'Change File' to select flash_project_args file"
         )
         return None
 
@@ -1040,7 +1040,7 @@ class FactoryGUI(QMainWindow):
         ctrl_port = self.ctrl_combo.currentText()
         
         if not flash_port or flash_port.startswith("<"):
-            QMessageBox.warning(self, "无刷机口", "请选择刷机口(CH340)")
+            QMessageBox.warning(self, "No Flash Port", "Please select flash port (CH340)")
             return
 
         arg_file = self._pick_flash_args_file()
@@ -1099,7 +1099,7 @@ class FactoryGUI(QMainWindow):
                 ret = proc.returncode
                 out = ''.join(output_lines)
                 self._append_log_async(out)
-                self._append_log_async(f"[FLASH] 烧录完成，返回码: {ret}\n")
+                self._append_log_async(f"[FLASH] Flash complete, exit code: {ret}\n")
                 print(f"[FLASH][DBG] esptool ret={ret}")
                 
                 # 4. 发送 !RUN (复用控制口)
@@ -1107,32 +1107,32 @@ class FactoryGUI(QMainWindow):
                     print("[FLASH][DBG] sending !RUN")
                     self.ctrl_serial.ser.write(b"!RUN\n")
                     self.ctrl_serial.ser.flush()
-                    self._append_log_async("[FLASH] !RUN 已发送\n")
+                    self._append_log_async("[FLASH] !RUN sent\n")
                     time.sleep(1.5)  # 等待 DUT 复位完成
                 
                 # 5. 重新打开烧录口（直接在线程里重连，不用 QTimer）
                 if ret == 0:
                     print(f"[FLASH][DBG] reopening {flash_port}")
-                    self._append_log_async("[FLASH] 重新打开烧录口...\n")
+                    self._append_log_async("[FLASH] Reopening flash port...\n")
                     
                     # 添加重试逻辑（Windows 可能需要时间释放端口）
                     ok = False
                     for i in range(20):  # 最多重试 20 次，共 5 秒
                         ok = self.flash_serial.open(flash_port, 115200)
                         if ok:
-                            self._append_log_async(f"[FLASH] 烧录口已重新打开（尝试 {i+1} 次），等待自测结果...\n")
+                            self._append_log_async(f"[FLASH] Flash port reopened (attempt {i+1}), waiting for selftest result...\n")
                             print(f"[FLASH][DBG] flash port reopened successfully on attempt {i+1}")
                             break
                         time.sleep(0.25)
                     
                     if not ok:
-                        self._append_log_async("[FLASH] 重新打开失败，请手动重新连接！\n")
+                        self._append_log_async("[FLASH] Reopen failed, please reconnect manually!\n")
                         print("[FLASH][DBG] flash port reopen failed after 20 retries")
                 else:
-                    self._append_log_async(f"[FLASH] 烧录失败，返回码 {ret}\n")
+                    self._append_log_async(f"[FLASH] Flash failed, exit code {ret}\n")
                     
             except Exception as e:
-                self._append_log_async(f"[FLASH] 异常: {e}\n")
+                self._append_log_async(f"[FLASH] Exception: {e}\n")
                 print(f"[FLASH][DBG] exception: {e}")
                 import traceback
                 traceback.print_exc()
