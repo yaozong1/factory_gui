@@ -390,11 +390,25 @@ class FactoryGUI(QMainWindow):
         voltage_layout = QVBoxLayout()
         self.volt_table = QTableWidget(8, 3)
         self.volt_table.setHorizontalHeaderLabels(["Channel", "Voltage(V)", "Status"])
-        self.volt_table.setColumnWidth(0, 80)
+        self.volt_table.setColumnWidth(0, 180)  # 加宽以容纳别名
         self.volt_table.setColumnWidth(1, 100)
         self.volt_table.setColumnWidth(2, 80)
+        
+        # 通道别名和期望电压 (V)
+        channel_names = [
+            "AI1 (5V0_BUCK)",
+            "AI2 (5V0)",
+            "AI3 (3V3_AWS)",
+            "AI4 (4V0)",
+            "AI5 (3V3_LDO)",
+            "AI6 (4V7_BOS)",
+            "AI7 (3V3ANT)",
+            "AI8 (IBL)"
+        ]
+        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.3, 2.5]  # 期望电压值
+        
         for i in range(8):
-            self.volt_table.setItem(i, 0, QTableWidgetItem(f"AI{i+1}"))
+            self.volt_table.setItem(i, 0, QTableWidgetItem(channel_names[i]))
             self.volt_table.setItem(i, 1, QTableWidgetItem("-"))
             self.volt_table.setItem(i, 2, QTableWidgetItem("-"))
         voltage_layout.addWidget(self.volt_table)
@@ -794,19 +808,24 @@ class FactoryGUI(QMainWindow):
                     # 更新电压值
                     self.volt_table.item(i, 1).setText(f"{voltage_v:.3f}")
                     
-                    # 更新状态（根据电压范围判断）
+                    # 更新状态（根据电压规格判断±5%）
+                    expected_v = self.voltage_specs[i]
+                    tolerance = 0.05  # ±5%
+                    lower_limit = expected_v * (1 - tolerance)
+                    upper_limit = expected_v * (1 + tolerance)
+                    
                     status = "OK"
                     color = QColor(144, 238, 144)  # 浅绿色
                     
-                    if voltage_mv > 10000:  # 超过 10V
-                        status = "OverV"
-                        color = QColor(255, 182, 193)  # 浅红色
+                    if voltage_mv == 0:
+                        status = "N/A"
+                        color = QColor(211, 211, 211)  # 浅灰色
                     elif voltage_mv < 0:
                         status = "Error"
                         color = QColor(255, 182, 193)  # 浅红色
-                    elif voltage_mv == 0:
-                        status = "N/A"
-                        color = QColor(211, 211, 211)  # 浅灰色
+                    elif voltage_v < lower_limit or voltage_v > upper_limit:
+                        status = "Out of Range"
+                        color = QColor(255, 182, 193)  # 浅红色
                     
                     self.volt_table.item(i, 2).setText(status)
                     self.volt_table.item(i, 2).setBackground(color)
