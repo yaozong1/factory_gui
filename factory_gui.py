@@ -180,6 +180,12 @@ class FactoryGUI(QMainWindow):
         self.timer.setInterval(50)  # 20Hz 轮询串口
         self.timer.timeout.connect(self.on_tick)
 
+
+        # ACK 定时器:flash 后每 500ms 发送 ACK
+        self.ack_timer = QTimer(self)
+        self.ack_timer.setInterval(500)  # 500ms
+        self.ack_timer.timeout.connect(self._send_ack)
+        self._ack_running = False
         # 状态：是否在等待一次自测 JSON（用于"烧录并等待"功能）
         self._awaiting_result = False
         self._await_deadline_ms = 0
@@ -565,6 +571,7 @@ class FactoryGUI(QMainWindow):
     def _on_disconnect(self):
         # 同时断开两个串口
         self.timer.stop()
+        self._stop_ack_timer()
         self.ctrl_serial.close()
         self.flash_serial.close()
         self.connect_btn.setEnabled(True)
@@ -851,6 +858,21 @@ class FactoryGUI(QMainWindow):
             self._parse_voltage_adc(ctrl_chunk)
         
         # 从刷机口读取 DUT 输出（自测结果从这里来）
+
+        # 如果在等待自测结果,每 500ms 发送 ACK
+        if self._awaiting_result and self.flash_serial.ser and self.flash_serial.ser.is_open:
+            if not hasattr(self, "_last_ack_ms"):
+                self._last_ack_ms = 0
+            now_ms = int(time.time() * 1000)
+            if now_ms - self._last_ack_ms >= 500:
+                try:
+                    self.flash_serial.ser.write(b"!GUI_SELFTEST_ACK\n")
+                    self.flash_serial.ser.flush()
+                    self._append_log("[ACK] Sent: !GUI_SELFTEST_ACK\n")
+                    self._last_ack_ms = now_ms
+                except Exception as e:
+                    self._append_log(f"[ACK] Send failed: {e}\n")
+
         chunk = self.flash_serial.read_lines()
         if not chunk:
             # 减少调试输出：只在每 100 次打印一次
@@ -961,6 +983,9 @@ class FactoryGUI(QMainWindow):
         self.lbl_bat.set_state(res.battery_ok)
         self.lbl_bat_v.setText(f"V={res.battery_v:.2f}V")
         self.lbl_ign.set_state(res.ign_pass)  # 更新IGN光耦测试状态
+
+        # 停止 ACK 定时器
+        self._stop_ack_timer()
 
         # 如果正处于“烧录并等待”的等待阶段，第一帧解析成功即完成
         if self._awaiting_result:
@@ -1141,6 +1166,10 @@ class FactoryGUI(QMainWindow):
                         if ok:
                             self._append_log_async(f"[FLASH] Flash port reopened (attempt {i+1}), waiting for selftest result...\n")
                             print(f"[FLASH][DBG] flash port reopened successfully on attempt {i+1}")
+                            # 设置等待标志,触发 on_tick 中的 ACK 发送
+                            self._awaiting_result = True
+                            self._await_deadline_ms = int(time.time() * 1000) + 40_000
+                            print("[FLASH][DBG] set _awaiting_result=True, ACK will be sent every 500ms")
                             break
                         time.sleep(0.25)
                     
@@ -1158,6 +1187,39 @@ class FactoryGUI(QMainWindow):
 
         threading.Thread(target=run_flash, daemon=True).start()
 
+
+    def _start_ack_timer(self):
+        """启动ACK定时器"""
+        if not self._ack_running:
+            self._ack_running = True
+            self.ack_timer.start()
+            self._append_log('[ACK] ACK timer started (500ms interval)\n')
+            print('[ACK][DBG] ACK timer started')
+
+    def _stop_ack_timer(self):
+        """停止ACK定时器"""
+        if self._ack_running:
+            self.ack_timer.stop()
+            self._ack_running = False
+            self._append_log('[ACK] ACK timer stopped\n')
+            print('[ACK][DBG] ACK timer stopped')
+
+    def _send_ack(self):
+        """发送ACK到DUT"""
+        if not self.flash_serial.ser or not self.flash_serial.ser.is_open:
+            self._append_log('[ACK] Flash port closed, stopping ACK timer\n')
+            self.ack_timer.stop()
+            self._ack_running = False
+            return
+        
+        try:
+            self.flash_serial.ser.write(b'!GUI_SELFTEST_ACK\n')
+            self.flash_serial.ser.flush()
+            self._append_log('[ACK] Sent: !GUI_SELFTEST_ACK\n')
+        except Exception as e:
+            self._append_log(f'[ACK] Send failed: {e}\n')
+            self.ack_timer.stop()
+            self._ack_running = False
 
     def _append_log_async(self, text: str):
         QTimer.singleShot(0, lambda: self._append_log(text))
