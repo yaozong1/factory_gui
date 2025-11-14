@@ -176,6 +176,7 @@ class FactoryGUI(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("PE-Board Factory GUI (Preview)")
+        # ?????????
         self.resize(980, 680)
 
         # 双串口管理：控制口用于命令，刷机口用于读取数据
@@ -411,17 +412,18 @@ class FactoryGUI(QMainWindow):
         panel.addWidget(self.lbl_im, r, 1)
         r += 1
 
-        # 右侧/下方：8路电压显示
-        vbox2 = QVBoxLayout()
+        # ???????????Voltage ????Serial Log ???
         voltage_group = QGroupBox("8-CH Voltage (K10-3U8)")
         voltage_layout = QVBoxLayout()
         self.volt_table = QTableWidget(8, 3)
         self.volt_table.setHorizontalHeaderLabels(["Channel", "Voltage(V)", "Status"])
-        self.volt_table.setColumnWidth(0, 180)  # 加宽以容纳别名
-        self.volt_table.setColumnWidth(1, 100)
-        self.volt_table.setColumnWidth(2, 80)
-        
-        # 通道别名和期望电压 (V)
+        # ?????????????????????????
+        # ??????????????30%??
+        self.volt_table.setColumnWidth(0, 260)
+        self.volt_table.setColumnWidth(1, 140)
+        self.volt_table.setColumnWidth(2, 120)
+        self.volt_table.setMinimumWidth(620)
+
         channel_names = [
             "AI1 (5V0_BUCK)",
             "AI2 (5V0)",
@@ -432,17 +434,30 @@ class FactoryGUI(QMainWindow):
             "AI7 (3V3ANT)",
             "AI8 (IBL)"
         ]
-        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.3, 2.5]  # 期望电压值
-        
+        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.3, 2.5]
         for i in range(8):
             self.volt_table.setItem(i, 0, QTableWidgetItem(channel_names[i]))
             self.volt_table.setItem(i, 1, QTableWidgetItem("-"))
             self.volt_table.setItem(i, 2, QTableWidgetItem("-"))
+        # ?????????????????????8????????????
+        self.volt_table.verticalHeader().setDefaultSectionSize(32)  # ?????????
+        # ?????????? + 8??? + ????
+        try:
+            row_h = self.volt_table.verticalHeader().defaultSectionSize()
+            header_h = self.volt_table.horizontalHeader().height() or 24
+        except Exception:
+            row_h = 32
+            header_h = 24
+        extra = 24
+        total_h = header_h + row_h * 8 + extra
+        self.volt_table.setFixedHeight(total_h)
+        # ???????????????
+        self.volt_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         voltage_layout.addWidget(self.volt_table)
         voltage_group.setLayout(voltage_layout)
         root.addWidget(voltage_group)
 
-        # 底部：日志窗口
+        # ????????Voltage????????
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         root.addWidget(QLabel("Serial Log"))
