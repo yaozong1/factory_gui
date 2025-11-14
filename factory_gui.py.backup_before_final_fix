@@ -3,9 +3,6 @@ import re
 import json
 import time
 import os
-print("="*80)
-print("[INIT] Loading factory_gui.py - VERSION WITH JIG REQUEST FEATURE")
-print("="*80)
 import subprocess
 import threading
 from pathlib import Path
@@ -192,10 +189,6 @@ class FactoryGUI(QMainWindow):
         # 状态：是否在等待一次自测 JSON（用于"烧录并等待"功能）
         self._awaiting_result = False
         self._await_deadline_ms = 0
-        # 治具数据请求标志
-        self._requesting_jig_data = False
-        self._jig_handshake_sent = False
-        self._jig_payload_received = False
 
         # 加载配置
         self.config = self._load_config()
@@ -579,7 +572,6 @@ class FactoryGUI(QMainWindow):
         # 同时断开两个串口
         self.timer.stop()
         self._stop_ack_timer()
-        self._requesting_jig_data = False
         self.ctrl_serial.close()
         self.flash_serial.close()
         self.connect_btn.setEnabled(True)
@@ -851,12 +843,6 @@ class FactoryGUI(QMainWindow):
                 im_pass = bool(data.get("im_pass", False))
                 if im_tested:
                     self.lbl_im.set_state(im_pass)
-            
-            # 收到治具的完整payload后，停止发送 !GUI_REQUEST_DATA
-            if self._requesting_jig_data:
-                self._requesting_jig_data = False
-                print("[JIG][DBG] Received payload, stopped sending !GUI_REQUEST_DATA")
-                self._append_log("[JIG] Payload received, stopped requesting\n")
                     
         except json.JSONDecodeError as e:
             print(f"[VOLTAGE] JSON 解析失败: {e}")
@@ -886,31 +872,6 @@ class FactoryGUI(QMainWindow):
                     self._last_ack_ms = now_ms
                 except Exception as e:
                     self._append_log(f"[ACK] Send failed: {e}\n")
-
-        # ??????????????? 500ms ??????ACK???????
-        if self._requesting_jig_data and self.ctrl_serial.ser and self.ctrl_serial.ser.is_open:
-            if not hasattr(self, "_last_jig_req_ms"):
-                self._last_jig_req_ms = 0
-            now_ms = int(time.time() * 1000)
-            if now_ms - self._last_jig_req_ms >= 500:
-                try:
-                    self.ctrl_serial.ser.write(b"!GUI_REQUEST_DATA\n")
-                    self.ctrl_serial.ser.flush()
-                    self._append_log("[JIG] Sent: !GUI_REQUEST_DATA\n")
-                    print("[JIG][DBG] Sent !GUI_REQUEST_DATA to ctrl_serial")  # ?????????
-                    self._last_jig_req_ms = now_ms
-                except Exception as e:
-                    self._append_log(f"[JIG] Request failed: {e}\n")
-                    print(f"[JIG][DBG] Send failed: {e}")  # ?????????
-        elif self._requesting_jig_data:
-            # ??????????
-            if not hasattr(self, '_jig_nosend_counter'):
-                self._jig_nosend_counter = 0
-            self._jig_nosend_counter += 1
-            if self._jig_nosend_counter == 1:  # ??????
-                ctrl_open = self.ctrl_serial.ser is not None and self.ctrl_serial.ser.is_open if self.ctrl_serial.ser else False
-                print(f"[JIG][DBG] Not sending: ctrl_serial.ser={self.ctrl_serial.ser is not None}, is_open={ctrl_open}")
-
 
         chunk = self.flash_serial.read_lines()
         if not chunk:
@@ -971,9 +932,6 @@ class FactoryGUI(QMainWindow):
                 QMessageBox.warning(self, "Wait Timeout", "No selftest result received after flashing timeout.")
 
     def _apply_summary(self, data: dict):
-        # ????payload??????
-        self._jig_payload_received = True
-        self._requesting_jig_data = False
         # 容错解析
         res = SelftestResult()
         res.eg915_ok = bool(data.get("eg915_ok", False))
@@ -1122,30 +1080,6 @@ class FactoryGUI(QMainWindow):
 
     def _on_flash_and_wait(self):
         """极简版：COM24保持打开，只断开/重连COM6"""
-        # 清空上一轮测试的标志和状态（新一轮测试开始）
-        self._awaiting_result = False
-        self._requesting_jig_data = False
-        if hasattr(self, '_last_ack_ms'):
-            delattr(self, '_last_ack_ms')
-        if hasattr(self, '_last_jig_req_ms'):
-            delattr(self, '_last_jig_req_ms')
-        if hasattr(self, '_jig_nosend_counter'):
-            delattr(self, '_jig_nosend_counter')
-        print("[FLASH][DBG] Cleared previous test flags for new round")
-        self._append_log("[FLASH] === New test round started ===\n")
-        
-        # 清空上一轮测试的标志和状态（新一轮测试开始）
-        self._awaiting_result = False
-        self._requesting_jig_data = False
-        if hasattr(self, '_last_ack_ms'):
-            delattr(self, '_last_ack_ms')
-        if hasattr(self, '_last_jig_req_ms'):
-            delattr(self, '_last_jig_req_ms')
-        if hasattr(self, '_jig_nosend_counter'):
-            delattr(self, '_jig_nosend_counter')
-        print("[FLASH][DBG] Cleared previous test flags for new round")
-        self._append_log("[FLASH] === New test round started ===\n")
-        
         flash_port = self.flash_combo.currentText()
         ctrl_port = self.ctrl_combo.currentText()
         
@@ -1236,9 +1170,6 @@ class FactoryGUI(QMainWindow):
                             self._awaiting_result = True
                             self._await_deadline_ms = int(time.time() * 1000) + 40_000
                             print("[FLASH][DBG] set _awaiting_result=True, ACK will be sent every 500ms")
-                            # 同时向治具发送请求,让治具发送测试 payload
-                            self._requesting_jig_data = True
-                            print("[FLASH][DBG] set _requesting_jig_data=True, will request jig data every 500ms")
                             break
                         time.sleep(0.25)
                     
