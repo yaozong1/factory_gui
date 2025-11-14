@@ -79,6 +79,8 @@ def extract_json_blocks(buf: str):
 @dataclass
 class SelftestResult:
     eg915_ok: bool = False
+    eg915_imei: str = ""
+    eg915_iccid: str = ""
     motion_ok: bool = False
     motion_mag: float = 0.0
     rs485_pass: bool = False
@@ -350,6 +352,17 @@ class FactoryGUI(QMainWindow):
         self.lbl_eg915 = StatusLabel("-")
         panel.addWidget(QLabel("EG915"), r, 0)
         panel.addWidget(self.lbl_eg915, r, 1)
+        r += 1
+
+        # IMEI and ICCID labels
+        self.lbl_imei = QLabel("IMEI: -")
+        self.lbl_imei.setStyleSheet("font-size: 9pt; color: #555;")
+        panel.addWidget(self.lbl_imei, r, 0, 1, 2)
+        r += 1
+        
+        self.lbl_iccid = QLabel("ICCID: -")
+        self.lbl_iccid.setStyleSheet("font-size: 9pt; color: #555;")
+        panel.addWidget(self.lbl_iccid, r, 0, 1, 2)
         r += 1
 
         self.lbl_motion = StatusLabel("-")
@@ -977,6 +990,8 @@ class FactoryGUI(QMainWindow):
         # 容错解析
         res = SelftestResult()
         res.eg915_ok = bool(data.get("eg915_ok", False))
+        res.eg915_imei = str(data.get("eg915_imei", ""))
+        res.eg915_iccid = str(data.get("eg915_iccid", ""))
         m = data.get("motion", {}) or {}
         res.motion_ok = bool(m.get("ok", False))
         try:
@@ -1014,6 +1029,17 @@ class FactoryGUI(QMainWindow):
         # 更新界面
         self.lbl_overall.set_state(res.overall)
         self.lbl_eg915.set_state(res.eg915_ok)
+        
+        # Update IMEI and ICCID labels
+        if res.eg915_imei:
+            self.lbl_imei.setText(f"IMEI: {res.eg915_imei}")
+        else:
+            self.lbl_imei.setText("IMEI: -")
+        
+        if res.eg915_iccid:
+            self.lbl_iccid.setText(f"ICCID: {res.eg915_iccid}")
+        else:
+            self.lbl_iccid.setText("ICCID: -")
         self.lbl_motion.set_state(res.motion_ok)
         self.lbl_motion_mag.setText(f"mag={res.motion_mag:.3f}")
         self.lbl_rs485.set_state(res.rs485_pass)
@@ -1137,6 +1163,8 @@ class FactoryGUI(QMainWindow):
         self.lbl_overall.setStyleSheet("")
         self.lbl_eg915.setText("-")
         self.lbl_eg915.setStyleSheet("")
+        self.lbl_imei.setText("IMEI: -")
+        self.lbl_iccid.setText("ICCID: -")
         self.lbl_motion.setText("-")
         self.lbl_motion.setStyleSheet("")
         self.lbl_motion_mag.setText("mag=0.000")
