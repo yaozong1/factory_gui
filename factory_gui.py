@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import sys
 import re
 import json
@@ -1059,6 +1060,99 @@ class FactoryGUI(QMainWindow):
         if self._awaiting_result:
             self._awaiting_result = False
             self._append_log("[INFO] Done testing\n")
+            # ä¿å­æ¬è®ªæµè¯ç»æå°CSV
+            self._save_test_result_to_csv(res)
+
+    def _save_test_result_to_csv(self, res: SelftestResult):
+        """Save parsed test results to CSV file"""
+        import csv
+        from datetime import datetime
+        
+        try:
+            # Read parsed results from GUI widgets
+            # Selftest Results section
+            overall_text = self.lbl_overall.text()
+            eg915_text = self.lbl_eg915.text()
+            imei_text = self.lbl_imei.text().replace("IMEI: ", "")
+            iccid_text = self.lbl_iccid.text().replace("ICCID: ", "")
+            motion_text = self.lbl_motion.text()
+            motion_mag_text = self.lbl_motion_mag.text().replace("mag=", "")
+            rs485_text = self.lbl_rs485.text()
+            rs485_info_text = self.lbl_rs485_info.text()
+            can_text = self.lbl_can.text()
+            can_info_text = self.lbl_can_info.text()
+            gnss_text = self.lbl_gnss.text()
+            gnss_info_text = self.lbl_gnss_info.text()
+            battery_text = self.lbl_bat.text()
+            battery_v_text = self.lbl_bat_v.text().replace("V=", "").replace("V", "")
+            ign_text = self.lbl_ign.text()
+            im_text = self.lbl_im.text()
+            
+            # 8-CH Voltage section: read parsed data from table
+            channel_names = ["5V_BUCK", "5V0", "3V3_AWS", "4V0", "3V3_LDO", "4V7_BOS", "3V3ANT", "IBL"]
+            
+            # Data row
+            row = [
+                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                imei_text,
+                iccid_text,
+                overall_text,
+                eg915_text,
+                motion_text,
+                motion_mag_text,
+                rs485_text,
+                rs485_info_text,
+                can_text,
+                can_info_text,
+                gnss_text,
+                gnss_info_text,
+                battery_text,
+                battery_v_text,
+                ign_text,
+                im_text
+            ]
+            
+            # Add 8-channel ADC voltage and status
+            for i in range(8):
+                v_item = self.volt_table.item(i, 1)
+                s_item = self.volt_table.item(i, 2)
+                v_text = v_item.text() if v_item else "-"
+                s_text = s_item.text() if s_item else "-"
+                row.append(v_text)
+                row.append(s_text)
+            
+            # CSV file path
+            csv_path = os.path.join(os.path.dirname(__file__), 'test_results.csv')
+            write_header = not os.path.exists(csv_path)
+            
+            with open(csv_path, 'a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                if write_header:
+                    # Header
+                    header = [
+                        'Time', 'IMEI', 'ICCID', 'Overall',
+                        'EG915', 'Motion', 'Motion_Mag',
+                        'RS485', 'RS485_Info', 'CAN', 'CAN_Info',
+                        'GNSS', 'GNSS_Info', 'Battery', 'Battery_V',
+                        'IGN_Opto', 'IM_Opto'
+                    ]
+                    # æ°å 8è·¯ADCå¤´ï¼æ¯è·¯çµååç?ææ¥å¨ä¸èµ·
+                    for ch in channel_names:
+                        header.append(f'{ch}_V')
+                        header.append(f'{ch}_Status')
+                    writer.writerow(header)
+                
+                writer.writerow(row)
+            
+            self._append_log(f"[CSV] Test result saved to {csv_path}\n")
+            print(f"[CSV] Test result saved: {len(row)} columns")
+            
+        except Exception as e:
+            self._append_log(f"[CSV] Save failed: {e}\n")
+            print(f"[CSV] Save failed: {e}")
+            import traceback
+            traceback.print_exc()
+
 
     def _on_simulate(self):
         demo = (
