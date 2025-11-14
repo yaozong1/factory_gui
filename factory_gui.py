@@ -356,12 +356,12 @@ class FactoryGUI(QMainWindow):
 
         # IMEI and ICCID labels
         self.lbl_imei = QLabel("IMEI: -")
-        self.lbl_imei.setStyleSheet("font-size: 9pt; color: #555;")
+        self.lbl_imei.setStyleSheet("font-size: 9pt; color: #cfcfcf;")
         panel.addWidget(self.lbl_imei, r, 0, 1, 2)
         r += 1
         
         self.lbl_iccid = QLabel("ICCID: -")
-        self.lbl_iccid.setStyleSheet("font-size: 9pt; color: #555;")
+        self.lbl_iccid.setStyleSheet("font-size: 9pt; color: #cfcfcf;")
         panel.addWidget(self.lbl_iccid, r, 0, 1, 2)
         r += 1
 
