@@ -1131,19 +1131,39 @@ class FactoryGUI(QMainWindow):
             delattr(self, '_last_jig_req_ms')
         if hasattr(self, '_jig_nosend_counter'):
             delattr(self, '_jig_nosend_counter')
-        print("[FLASH][DBG] Cleared previous test flags for new round")
-        self._append_log("[FLASH] === New test round started ===\n")
         
-        # 清空上一轮测试的标志和状态（新一轮测试开始）
-        self._awaiting_result = False
-        self._requesting_jig_data = False
-        if hasattr(self, '_last_ack_ms'):
-            delattr(self, '_last_ack_ms')
-        if hasattr(self, '_last_jig_req_ms'):
-            delattr(self, '_last_jig_req_ms')
-        if hasattr(self, '_jig_nosend_counter'):
-            delattr(self, '_jig_nosend_counter')
-        print("[FLASH][DBG] Cleared previous test flags for new round")
+        # 清空界面上的 Selftest Results 显示
+        self.lbl_overall.setText("-")
+        self.lbl_overall.setStyleSheet("")
+        self.lbl_eg915.setText("-")
+        self.lbl_eg915.setStyleSheet("")
+        self.lbl_motion.setText("-")
+        self.lbl_motion.setStyleSheet("")
+        self.lbl_motion_mag.setText("mag=0.000")
+        self.lbl_rs485.setText("-")
+        self.lbl_rs485.setStyleSheet("")
+        self.lbl_rs485_info.setText("-")
+        self.lbl_can.setText("-")
+        self.lbl_can.setStyleSheet("")
+        self.lbl_can_info.setText("-")
+        self.lbl_gnss.setText("-")
+        self.lbl_gnss.setStyleSheet("")
+        self.lbl_gnss_info.setText("-")
+        self.lbl_bat.setText("-")
+        self.lbl_bat.setStyleSheet("")
+        self.lbl_bat_v.setText("V=0.00V")
+        self.lbl_ign.setText("-")
+        self.lbl_ign.setStyleSheet("")
+        self.lbl_im.setText("-")
+        self.lbl_im.setStyleSheet("")
+        
+        # 清空 8-CH Voltage 表格
+        for i in range(8):
+            self.volt_table.item(i, 1).setText("-")  # Voltage列
+            # 重新创建 Status 列的项，恢复默认背景色（和 Voltage 列一样的深灰色）
+            self.volt_table.setItem(i, 2, QTableWidgetItem("-"))
+        
+        print("[FLASH][DBG] Cleared previous test results and flags for new round")
         self._append_log("[FLASH] === New test round started ===\n")
         
         flash_port = self.flash_combo.currentText()
