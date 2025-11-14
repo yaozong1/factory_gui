@@ -1058,7 +1058,7 @@ class FactoryGUI(QMainWindow):
         # 如果正处于“烧录并等待”的等待阶段，第一帧解析成功即完成
         if self._awaiting_result:
             self._awaiting_result = False
-            QMessageBox.information(self, "自测完成", "已收到 DUT 自测结果。")
+            self._append_log("[INFO] Done testing\n")
 
     def _on_simulate(self):
         demo = (
