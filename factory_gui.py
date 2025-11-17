@@ -412,6 +412,14 @@ class FactoryGUI(QMainWindow):
         panel.addWidget(self.lbl_im, r, 1)
         r += 1
 
+        # IBL (IO2) display: show numeric voltage and PASS/FAIL based on 2530mV ?5%
+        self.lbl_ibl = StatusLabel("-")
+        self.lbl_ibl_v = QLabel("V=N/A")
+        panel.addWidget(QLabel("IBL"), r, 0)
+        panel.addWidget(self.lbl_ibl, r, 1)
+        panel.addWidget(self.lbl_ibl_v, r, 2)
+        r += 1
+
         # ???????????Voltage ????Serial Log ???
         voltage_group = QGroupBox("8-CH Voltage (K10-3U8)")
         voltage_layout = QVBoxLayout()
@@ -873,6 +881,31 @@ class FactoryGUI(QMainWindow):
                     
                     self.volt_table.item(i, 2).setText(status)
                     self.volt_table.item(i, 2).setBackground(color)
+
+            # If K10 payload includes explicit ibl_mv (mV), use it to set AI8 (IBL) status
+            if "ibl_mv" in data:
+                try:
+                    ibl_mv = int(data.get("ibl_mv", 0))
+                    ibl_v = ibl_mv / 1000.0
+                    # update displayed voltage (override ch8 if needed)
+                    self.volt_table.item(7, 1).setText(f"{ibl_v:.3f}")
+
+                    lower_m = int(round(2530 * 0.95))
+                    upper_m = int(round(2530 * 1.05))
+                    if ibl_mv == 0:
+                        status = "N/A"
+                        color = QColor(211, 211, 211)
+                    elif lower_m <= ibl_mv <= upper_m:
+                        status = "OK"
+                        color = QColor(144, 238, 144)
+                    else:
+                        status = "Out of Range"
+                        color = QColor(255, 182, 193)
+
+                    self.volt_table.item(7, 2).setText(status)
+                    self.volt_table.item(7, 2).setBackground(color)
+                except Exception:
+                    pass
             
             # 解析 IM 测试结果
             if "im_tested" in data and "im_pass" in data:
@@ -1067,6 +1100,31 @@ class FactoryGUI(QMainWindow):
         self.lbl_bat.set_state(res.battery_ok)
         self.lbl_bat_v.setText(f"V={res.battery_v:.2f}V")
         self.lbl_ign.set_state(res.ign_pass)  # 更新IGN光耦测试状态
+
+        # IBL (IO2) from selftest payload (mV). PASS if within 2530mV ?5%.
+        try:
+            ibl_mv = data.get("ibl_mv", None)
+            if ibl_mv is None:
+                # some payloads might include 0 or omit the field
+                self.lbl_ibl.setText("-")
+                self.lbl_ibl_v.setText("V=N/A")
+            else:
+                ibl_mv = int(ibl_mv)
+                ibl_v = ibl_mv / 1000.0
+                self.lbl_ibl_v.setText(f"V={ibl_v:.3f}V")
+                lower = int(round(2530 * 0.95))
+                upper = int(round(2530 * 1.05))
+                if ibl_mv == 0:
+                    # treat 0 as N/A
+                    self.lbl_ibl.setText("N/A")
+                    self.lbl_ibl.setStyleSheet("color: gray; font-weight: bold;")
+                elif lower <= ibl_mv <= upper:
+                    self.lbl_ibl.set_state(True)
+                else:
+                    self.lbl_ibl.set_state(False)
+        except Exception:
+            # ignore parse errors
+            pass
 
         # 停止 ACK 定时器
         self._stop_ack_timer()
