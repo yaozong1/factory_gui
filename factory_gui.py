@@ -421,16 +421,16 @@ class FactoryGUI(QMainWindow):
         r += 1
 
         # ???????????Voltage ????Serial Log ???
-        voltage_group = QGroupBox("8-CH Voltage (K10-3U8)")
+        voltage_group = QGroupBox("7-CH Voltage (K10-3U8)")
         voltage_layout = QVBoxLayout()
-        self.volt_table = QTableWidget(8, 3)
+        self.volt_table = QTableWidget(7, 3)  # Only 7 channels, ignore AI8(IBL)
         self.volt_table.setHorizontalHeaderLabels(["Channel", "Voltage(V)", "Status"])
         # ?????????????????????????
         # ??????????????30%??
         self.volt_table.setColumnWidth(0, 260)
         self.volt_table.setColumnWidth(1, 140)
         self.volt_table.setColumnWidth(2, 120)
-        self.volt_table.setMinimumWidth(620)
+        self.volt_table.setMinimumWidth(550)
 
         channel_names = [
             "AI1 (5V0_BUCK)",
@@ -440,24 +440,25 @@ class FactoryGUI(QMainWindow):
             "AI5 (3V3_LDO)",
             "AI6 (4V7_BOS)",
             "AI7 (3V3ANT)",
-            "AI8 (IBL)"
+            "AI7 (3V3ANT)"
+            # AI8 (IBL) - ignored
         ]
-        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.3, 2.5]
-        for i in range(8):
+        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.3]  # 7 channels only
+        for i in range(7):  # Only 7 channels
             self.volt_table.setItem(i, 0, QTableWidgetItem(channel_names[i]))
             self.volt_table.setItem(i, 1, QTableWidgetItem("-"))
             self.volt_table.setItem(i, 2, QTableWidgetItem("-"))
-        # ?????????????????????8????????????
+        # ?????????????????????7????????????
         self.volt_table.verticalHeader().setDefaultSectionSize(32)  # ?????????
-        # ?????????? + 8??? + ????
+        # ?????????? + 7??? + ????
         try:
             row_h = self.volt_table.verticalHeader().defaultSectionSize()
             header_h = self.volt_table.horizontalHeader().height() or 24
         except Exception:
             row_h = 32
             header_h = 24
-        extra = 24
-        total_h = header_h + row_h * 8 + extra
+        extra = 2  # Minimal padding to avoid cutting off bottom border
+        total_h = header_h + row_h * 7 + extra  # 7 channels
         self.volt_table.setFixedHeight(total_h)
         # ???????????????
         self.volt_table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -850,8 +851,8 @@ class FactoryGUI(QMainWindow):
             json_str = match.group(1)
             data = json.loads(json_str)
             
-            # 更新电压表格
-            for i in range(8):
+            # 更新电压表格 (只处理前7个通道，忽略ch8)
+            for i in range(7):  # Only process first 7 channels, ignore ch8 (IBL)
                 ch_key = f"ch{i+1}"
                 if ch_key in data:
                     voltage_mv = int(data[ch_key])
@@ -1076,7 +1077,7 @@ class FactoryGUI(QMainWindow):
         res.ign_pass = bool(ign.get("pass", False))
 
         # 更新界面
-        self.lbl_overall.set_state(res.overall)
+        # self.lbl_overall.set_state(res.overall)  # Will be set after voltage check
         self.lbl_eg915.set_state(res.eg915_ok)
         
         # Update IMEI and ICCID labels
@@ -1126,6 +1127,35 @@ class FactoryGUI(QMainWindow):
             # ignore parse errors
             pass
 
+
+        # 验证 7-CH Voltage 表格判断 OVERALL (忽略第8通道IBL)
+        voltage_all_ok = True
+        for i in range(7):  # Only check first 7 channels, ignore AI8(IBL)
+            status_item = self.volt_table.item(i, 2)
+            if status_item:
+                status_text = status_item.text()
+                if status_text != "OK":
+                    voltage_all_ok = False
+                    break
+            else:
+                voltage_all_ok = False
+                break
+        
+        # 最终 OVERALL = selftest OVERALL AND 7-CH Voltage OVERALL
+        final_overall = res.overall and voltage_all_ok
+        self.lbl_overall.set_state(final_overall)
+        
+        if not final_overall:
+            reasons = []
+            if not res.overall:
+                reasons.append("Selftest FAIL")
+            if not voltage_all_ok:
+                reasons.append("Voltage NOT all OK")
+            reason_str = ", ".join(reasons)
+            self._append_log(f"[OVERALL] FAIL - Reason: {reason_str}\n")
+        else:
+            self._append_log("[OVERALL] PASS - All tests passed\n")
+
         # 停止 ACK 定时器
         self._stop_ack_timer()
 
@@ -1133,7 +1163,7 @@ class FactoryGUI(QMainWindow):
         if self._awaiting_result:
             self._awaiting_result = False
             self._append_log("[INFO] Done testing\n")
-            # ���讪�����CSV
+            # 讪CSV
             self._save_test_result_to_csv(res)
 
     def _save_test_result_to_csv(self, res: SelftestResult):
@@ -1161,8 +1191,8 @@ class FactoryGUI(QMainWindow):
             ign_text = self.lbl_ign.text()
             im_text = self.lbl_im.text()
             
-            # 8-CH Voltage section: read parsed data from table
-            channel_names = ["5V_BUCK", "5V0", "3V3_AWS", "4V0", "3V3_LDO", "4V7_BOS", "3V3ANT", "IBL"]
+            # 7-CH Voltage section: read parsed data from table (ignore AI8/IBL)
+            channel_names = ["5V_BUCK", "5V0", "3V3_AWS", "4V0", "3V3_LDO", "4V7_BOS", "3V3ANT"]  # 7 channels only
             
             # Data row
             row = [
@@ -1185,8 +1215,8 @@ class FactoryGUI(QMainWindow):
                 im_text
             ]
             
-            # Add 8-channel ADC voltage and status
-            for i in range(8):
+            # Add 7-channel ADC voltage and status (ignore AI8/IBL)
+            for i in range(7):  # Only 7 channels
                 v_item = self.volt_table.item(i, 1)
                 s_item = self.volt_table.item(i, 2)
                 v_text = v_item.text() if v_item else "-"
@@ -1209,7 +1239,7 @@ class FactoryGUI(QMainWindow):
                         'GNSS', 'GNSS_Info', 'Battery', 'Battery_V',
                         'IGN_Opto', 'IM_Opto'
                     ]
-                    # �� 8路ADC头��路����?����起
+                    #  8路ADC头路?起
                     for ch in channel_names:
                         header.append(f'{ch}_V')
                         header.append(f'{ch}_Status')
@@ -1355,8 +1385,8 @@ class FactoryGUI(QMainWindow):
         self.lbl_ibl.setStyleSheet("")
         self.lbl_ibl_v.setText("V=N/A")
         
-        # 清空 8-CH Voltage 表格
-        for i in range(8):
+        # 清空 7-CH Voltage 表格 (忽略AI8)
+        for i in range(7):  # Only 7 channels, ignore AI8(IBL)
             self.volt_table.item(i, 1).setText("-")  # Voltage列
             # 重新创建 Status 列的项，恢复默认背景色（和 Voltage 列一样的深灰色）
             self.volt_table.setItem(i, 2, QTableWidgetItem("-"))
