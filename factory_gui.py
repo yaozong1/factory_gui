@@ -1351,6 +1351,9 @@ class FactoryGUI(QMainWindow):
         self.lbl_ign.setStyleSheet("")
         self.lbl_im.setText("-")
         self.lbl_im.setStyleSheet("")
+        self.lbl_ibl.setText("-")
+        self.lbl_ibl.setStyleSheet("")
+        self.lbl_ibl_v.setText("V=N/A")
         
         # 清空 8-CH Voltage 表格
         for i in range(8):
