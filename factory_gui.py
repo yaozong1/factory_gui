@@ -13,12 +13,12 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal, QObject
 from PySide6.QtGui import QColor, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QComboBox, QTextEdit, QGroupBox, QTableWidget,
-    QTableWidgetItem, QMessageBox, QFileDialog
+    QTableWidgetItem, QMessageBox, QFileDialog, QProgressBar
 )
 
 try:
@@ -172,6 +172,11 @@ class StatusLabel(QLabel):
         self.setStyleSheet(f"color: rgb({color.red()},{color.green()},{color.blue()}); font-weight: bold;")
 
 
+class ProgressSignals(QObject):
+    """用于线程安全地更新进度条的信号"""
+    update_progress = Signal(int, str)  # (value, format_text)
+
+
 class FactoryGUI(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -201,6 +206,13 @@ class FactoryGUI(QMainWindow):
         self._requesting_jig_data = False
         self._jig_handshake_sent = False
         self._jig_payload_received = False
+        
+        # 进度条更新信号（线程安全）
+        self.progress_signals = ProgressSignals()
+        self.progress_signals.update_progress.connect(self._update_progress_bar)
+        
+        # 测试运行状态标志（防止重复点击）
+        self._test_running = False
 
         # 加载配置
         self.config = self._load_config()
@@ -317,6 +329,30 @@ class FactoryGUI(QMainWindow):
         if last_path and Path(last_path).exists():
             self.flash_file_label.setText(last_path)
             self.flash_file_label.setStyleSheet("QLabel { padding: 5px; background-color: #e8f5e9; border: 1px solid #4CAF50; color: #2e7d32; }")
+        
+        # 进度条
+        progress_layout = QHBoxLayout()
+        progress_layout.addWidget(QLabel("Progress:"))
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p% - Ready")
+        # 设置进度条为绿色
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 2px solid grey;
+                border-radius: 5px;
+                text-align: center;
+            }
+            QProgressBar::chunk {
+                background-color: #4CAF50;
+                width: 10px;
+                margin: 0.5px;
+            }
+        """)
+        progress_layout.addWidget(self.progress_bar, 1)
+        root.addLayout(progress_layout)
         
         # 主功能按钮（大按钮）
         main_btn_layout = QHBoxLayout()
@@ -1039,9 +1075,17 @@ class FactoryGUI(QMainWindow):
                 if self._ack_started:
                     self._append_log('[ACK] Done sending ACK (timeout)\n')
                     self._ack_started = False
+                # 更新进度条并恢复Test按钮状态（超时）
+                self.progress_bar.setValue(0)
+                self.progress_bar.setFormat("%p% - TIMEOUT")
+                self._reset_test_button()
                 QMessageBox.warning(self, "Wait Timeout", "No selftest result received after flashing timeout.")
 
     def _apply_summary(self, data: dict):
+        # 更新进度: 90%
+        self.progress_bar.setValue(90)
+        self.progress_bar.setFormat("%p% - Parsing results...")
+        
         # ????payload??????
         self._jig_payload_received = True
         self._requesting_jig_data = False
@@ -1171,6 +1215,14 @@ class FactoryGUI(QMainWindow):
         if self._awaiting_result:
             self._awaiting_result = False
             self._append_log("[INFO] Done testing\n")
+            # 更新进度: 100%
+            self.progress_bar.setValue(100)
+            if final_overall:
+                self.progress_bar.setFormat("%p% - PASS")
+            else:
+                self.progress_bar.setFormat("%p% - FAIL")
+            # 恢复Test按钮状态（测试完成）
+            self._reset_test_button()
             # 讪CSV
             self._save_test_result_to_csv(res)
 
@@ -1353,6 +1405,12 @@ class FactoryGUI(QMainWindow):
 
     def _on_flash_and_wait(self):
         """极简版：COM24保持打开，只断开/重连COM6"""
+        # 防止重复点击：检查是否已有测试在运行
+        if self._test_running:
+            QMessageBox.warning(self, "测试进行中", "当前已有测试正在运行，请等待完成后再试")
+            self._append_log("[FLASH] Ignored: Test already running\n")
+            return
+        
         # 清空上一轮测试的标志和状态（新一轮测试开始）
         self._awaiting_result = False
         self._ack_started = False  # 重置ACK开始标志
@@ -1403,6 +1461,10 @@ class FactoryGUI(QMainWindow):
         print("[FLASH][DBG] Cleared previous test results and flags for new round")
         self._append_log("[FLASH] === New test round started ===\n")
         
+        # 重置进度条
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p% - Ready")
+        
         flash_port = self.flash_combo.currentText()
         ctrl_port = self.ctrl_combo.currentText()
         
@@ -1414,6 +1476,11 @@ class FactoryGUI(QMainWindow):
         if not arg_file:
             return
 
+        # 设置测试运行标志并禁用Test按钮
+        self._test_running = True
+        self.flash_btn.setEnabled(False)
+        self.flash_btn.setText("Testing...")
+        
         self._append_log(f"[FLASH] 开始烧录: {flash_port}\n")
         
         # 在后台线程中执行
@@ -1425,6 +1492,8 @@ class FactoryGUI(QMainWindow):
                     self.ctrl_serial.ser.write(b"!BOOT\n")
                     self.ctrl_serial.ser.flush()
                     self._append_log_async("[FLASH] !BOOT 已发送\n")
+                    # 更新进度: 10%
+                    self.progress_signals.update_progress.emit(10, "%p% - Sent !BOOT")
                     time.sleep(0.3)
 
                 # 2. 关闭烧录口
@@ -1450,6 +1519,8 @@ class FactoryGUI(QMainWindow):
                 print("[FLASH][DBG] starting esptool")
                 print(f"[FLASH][DBG] cmd: {' '.join(cmd)}")
                 self._append_log_async("[FLASH] 正在烧录...\n")
+                # 更新进度: 20%
+                self.progress_signals.update_progress.emit(20, "%p% - Flashing...")
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
                                       text=True, cwd=arg_file.parent)
                 
@@ -1469,12 +1540,26 @@ class FactoryGUI(QMainWindow):
                 self._append_log_async(f"[FLASH] Flash complete, exit code: {ret}\n")
                 print(f"[FLASH][DBG] esptool ret={ret}")
                 
+                # 检查烧录结果
+                if ret == 0:
+                    # 更新进度: 50%
+                    self.progress_signals.update_progress.emit(50, "%p% - Flash OK")
+                else:
+                    # 烧录失败，更新进度条并恢复按钮
+                    self.progress_signals.update_progress.emit(0, "%p% - Flash FAILED")
+                    self._append_log_async(f"[FLASH] Flash failed, exit code: {ret}\n")
+                    print(f"[FLASH][DBG] Flash failed, restoring button")
+                    QTimer.singleShot(0, self._reset_test_button)
+                    return  # 提前退出，不继续后续步骤
+                
                 # 4. 发送 !RUN (复用控制口)
                 if ret == 0 and ctrl_port and self.ctrl_serial.ser:
                     print("[FLASH][DBG] sending !RUN")
                     self.ctrl_serial.ser.write(b"!RUN\n")
                     self.ctrl_serial.ser.flush()
                     self._append_log_async("[FLASH] !RUN sent\n")
+                    # 更新进度: 60%
+                    self.progress_signals.update_progress.emit(60, "%p% - Sent !RUN")
                     time.sleep(1.5)  # 等待 DUT 复位完成
                 
                 # 5. 重新打开烧录口（直接在线程里重连，不用 QTimer）
@@ -1489,6 +1574,8 @@ class FactoryGUI(QMainWindow):
                         if ok:
                             self._append_log_async(f"[FLASH] Flash port reopened (attempt {i+1}), waiting for selftest result...\n")
                             print(f"[FLASH][DBG] flash port reopened successfully on attempt {i+1}")
+                            # 更新进度: 70%
+                            self.progress_signals.update_progress.emit(70, "%p% - Waiting selftest...")
                             # 设置等待标志,触发 on_tick 中的 ACK 发送
                             self._awaiting_result = True
                             self._await_deadline_ms = int(time.time() * 1000) + 40_000
@@ -1502,14 +1589,18 @@ class FactoryGUI(QMainWindow):
                     if not ok:
                         self._append_log_async("[FLASH] Reopen failed, please reconnect manually!\n")
                         print("[FLASH][DBG] flash port reopen failed after 20 retries")
-                else:
-                    self._append_log_async(f"[FLASH] Flash failed, exit code {ret}\n")
+                        # 更新进度条并恢复按钮状态（重连失败）
+                        self.progress_signals.update_progress.emit(0, "%p% - Reopen FAILED")
+                        QTimer.singleShot(0, self._reset_test_button)
                     
             except Exception as e:
                 self._append_log_async(f"[FLASH] Exception: {e}\n")
                 print(f"[FLASH][DBG] exception: {e}")
                 import traceback
                 traceback.print_exc()
+                # 更新进度条并恢复按钮状态（异常）
+                self.progress_signals.update_progress.emit(0, "%p% - ERROR")
+                QTimer.singleShot(0, self._reset_test_button)
 
         threading.Thread(target=run_flash, daemon=True).start()
 
@@ -1551,6 +1642,17 @@ class FactoryGUI(QMainWindow):
 
     def _append_log_async(self, text: str):
         QTimer.singleShot(0, lambda: self._append_log(text))
+
+    def _update_progress_bar(self, value: int, format_text: str):
+        """线程安全的进度条更新槽函数（在主线程中执行）"""
+        self.progress_bar.setValue(value)
+        self.progress_bar.setFormat(format_text)
+
+    def _reset_test_button(self):
+        """重置Test按钮状态（在主线程调用）"""
+        self._test_running = False
+        self.flash_btn.setEnabled(True)
+        self.flash_btn.setText("Test")
 
 
 def main():
