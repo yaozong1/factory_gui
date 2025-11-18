@@ -193,6 +193,7 @@ class FactoryGUI(QMainWindow):
         self.ack_timer.setInterval(500)  # 500ms
         self.ack_timer.timeout.connect(self._send_ack)
         self._ack_running = False
+        self._ack_started = False  # 记录是否已打印ACK开始日志
         # 状态：是否在等待一次自测 JSON（用于"烧录并等待"功能）
         self._awaiting_result = False
         self._await_deadline_ms = 0
@@ -397,7 +398,7 @@ class FactoryGUI(QMainWindow):
 
         self.lbl_bat = StatusLabel("-")
         self.lbl_bat_v = QLabel("V=0.00V")
-        panel.addWidget(QLabel("Battery/ADC"), r, 0)
+        panel.addWidget(QLabel("EBL"), r, 0)
         panel.addWidget(self.lbl_bat, r, 1)
         panel.addWidget(self.lbl_bat_v, r, 2)
         r += 1
@@ -943,9 +944,13 @@ class FactoryGUI(QMainWindow):
             now_ms = int(time.time() * 1000)
             if now_ms - self._last_ack_ms >= 500:
                 try:
+                    # 只在第一次发送时打印开始日志
+                    if not self._ack_started:
+                        self._append_log("[ACK] Start sending !GUI_SELFTEST_ACK (every 500ms)\n")
+                        self._ack_started = True
+                    
                     self.flash_serial.ser.write(b"!GUI_SELFTEST_ACK\n")
                     self.flash_serial.ser.flush()
-                    self._append_log("[ACK] Sent: !GUI_SELFTEST_ACK\n")
                     self._last_ack_ms = now_ms
                 except Exception as e:
                     self._append_log(f"[ACK] Send failed: {e}\n")
@@ -1031,6 +1036,9 @@ class FactoryGUI(QMainWindow):
         if self._awaiting_result and self._await_deadline_ms:
             if int(time.time() * 1000) > self._await_deadline_ms:
                 self._awaiting_result = False
+                if self._ack_started:
+                    self._append_log('[ACK] Done sending ACK (timeout)\n')
+                    self._ack_started = False
                 QMessageBox.warning(self, "Wait Timeout", "No selftest result received after flashing timeout.")
 
     def _apply_summary(self, data: dict):
@@ -1347,6 +1355,7 @@ class FactoryGUI(QMainWindow):
         """极简版：COM24保持打开，只断开/重连COM6"""
         # 清空上一轮测试的标志和状态（新一轮测试开始）
         self._awaiting_result = False
+        self._ack_started = False  # 重置ACK开始标志
         self._requesting_jig_data = False
         if hasattr(self, '_last_ack_ms'):
             delattr(self, '_last_ack_ms')
@@ -1518,7 +1527,9 @@ class FactoryGUI(QMainWindow):
         if self._ack_running:
             self.ack_timer.stop()
             self._ack_running = False
-            self._append_log('[ACK] ACK timer stopped\n')
+            if self._ack_started:
+                self._append_log('[ACK] Done sending ACK\n')
+                self._ack_started = False
             print('[ACK][DBG] ACK timer stopped')
 
     def _send_ack(self):
