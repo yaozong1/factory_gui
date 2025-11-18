@@ -173,8 +173,9 @@ class StatusLabel(QLabel):
 
 
 class ProgressSignals(QObject):
-    """用于线程安全地更新进度条的信号"""
+    """用于线程安全地更新进度条和按钮的信号"""
     update_progress = Signal(int, str)  # (value, format_text)
+    reset_button = Signal()  # 重置按钮信号
 
 
 class FactoryGUI(QMainWindow):
@@ -210,6 +211,7 @@ class FactoryGUI(QMainWindow):
         # 进度条更新信号（线程安全）
         self.progress_signals = ProgressSignals()
         self.progress_signals.update_progress.connect(self._update_progress_bar)
+        self.progress_signals.reset_button.connect(self._reset_test_button)
         
         # 测试运行状态标志（防止重复点击）
         self._test_running = False
@@ -1488,20 +1490,32 @@ class FactoryGUI(QMainWindow):
             try:
                 # 1. 发送 !BOOT (复用控制口)
                 if ctrl_port and self.ctrl_serial.ser:
-                    print("[FLASH][DBG] sending !BOOT")
-                    self.ctrl_serial.ser.write(b"!BOOT\n")
-                    self.ctrl_serial.ser.flush()
-                    self._append_log_async("[FLASH] !BOOT 已发送\n")
-                    # 更新进度: 10%
-                    self.progress_signals.update_progress.emit(10, "%p% - Sent !BOOT")
-                    time.sleep(0.3)
+                    try:
+                        print("[FLASH][DBG] sending !BOOT")
+                        self.ctrl_serial.ser.write(b"!BOOT\n")
+                        self.ctrl_serial.ser.flush()
+                        self._append_log_async("[FLASH] !BOOT 已发送\n")
+                        # 更新进度: 10%
+                        self.progress_signals.update_progress.emit(10, "%p% - Sent !BOOT")
+                        time.sleep(0.3)
+                    except Exception as e:
+                        self._append_log_async(f"[FLASH] Failed to send !BOOT: {e}\n")
+                        print(f"[FLASH][DBG] Failed to send !BOOT: {e}")
+                        self.progress_signals.update_progress.emit(0, "%p% - !BOOT Failed")
+                        self.progress_signals.reset_button.emit()
+                        return
 
                 # 2. 关闭烧录口
                 print("[FLASH][DBG] closing flash port")
-                if self.flash_serial.ser:
-                    self.flash_serial.ser.close()
-                    self.flash_serial.ser = None
-                time.sleep(0.5)
+                try:
+                    if self.flash_serial.ser:
+                        self.flash_serial.ser.close()
+                        self.flash_serial.ser = None
+                    time.sleep(0.5)
+                except Exception as e:
+                    self._append_log_async(f"[FLASH] Failed to close flash port: {e}\n")
+                    print(f"[FLASH][DBG] Failed to close flash port: {e}")
+                    # 继续执行，因为可能端口已经关闭了
                 
                 # 3. 烧录
                 abs_args = str(arg_file.resolve())
@@ -1547,9 +1561,12 @@ class FactoryGUI(QMainWindow):
                 else:
                     # 烧录失败，更新进度条并恢复按钮
                     self.progress_signals.update_progress.emit(0, "%p% - Flash FAILED")
-                    self._append_log_async(f"[FLASH] Flash failed, exit code: {ret}\n")
-                    print(f"[FLASH][DBG] Flash failed, restoring button")
-                    QTimer.singleShot(0, self._reset_test_button)
+                    if ret is None:
+                        self._append_log_async(f"[FLASH] Flash process did not complete properly\n")
+                    else:
+                        self._append_log_async(f"[FLASH] Flash failed, exit code: {ret}\n")
+                    print(f"[FLASH][DBG] Flash failed (ret={ret}), restoring button")
+                    self.progress_signals.reset_button.emit()
                     return  # 提前退出，不继续后续步骤
                 
                 # 4. 发送 !RUN (复用控制口)
@@ -1591,7 +1608,7 @@ class FactoryGUI(QMainWindow):
                         print("[FLASH][DBG] flash port reopen failed after 20 retries")
                         # 更新进度条并恢复按钮状态（重连失败）
                         self.progress_signals.update_progress.emit(0, "%p% - Reopen FAILED")
-                        QTimer.singleShot(0, self._reset_test_button)
+                        self.progress_signals.reset_button.emit()
                     
             except Exception as e:
                 self._append_log_async(f"[FLASH] Exception: {e}\n")
@@ -1600,7 +1617,7 @@ class FactoryGUI(QMainWindow):
                 traceback.print_exc()
                 # 更新进度条并恢复按钮状态（异常）
                 self.progress_signals.update_progress.emit(0, "%p% - ERROR")
-                QTimer.singleShot(0, self._reset_test_button)
+                self.progress_signals.reset_button.emit()
 
         threading.Thread(target=run_flash, daemon=True).start()
 
@@ -1650,9 +1667,11 @@ class FactoryGUI(QMainWindow):
 
     def _reset_test_button(self):
         """重置Test按钮状态（在主线程调用）"""
+        print("[FLASH][DBG] _reset_test_button() called")
         self._test_running = False
         self.flash_btn.setEnabled(True)
         self.flash_btn.setText("Test")
+        self._append_log("[FLASH] Test button restored\n")
 
 
 def main():
