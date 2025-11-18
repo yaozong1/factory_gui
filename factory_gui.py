@@ -444,7 +444,7 @@ class FactoryGUI(QMainWindow):
             "AI7 (3V3ANT)"
             # AI8 (IBL) - ignored
         ]
-        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.3]  # 7 channels only
+        self.voltage_specs = [5.0, 5.0, 3.3, 4.0, 3.3, 4.7, 3.2]  # AI7 changed to 3.2V
         for i in range(7):  # Only 7 channels
             self.volt_table.setItem(i, 0, QTableWidgetItem(channel_names[i]))
             self.volt_table.setItem(i, 1, QTableWidgetItem("-"))
