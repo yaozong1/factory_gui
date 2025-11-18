@@ -293,7 +293,7 @@ class FactoryGUI(QMainWindow):
         self.refresh_btn = QPushButton("Refresh Ports")
         self.connect_btn = QPushButton("Connect")
         self.disconnect_btn = QPushButton("Disconnect")
-        self.flash_btn = QPushButton("🔥 Flash & Wait")
+        self.flash_btn = QPushButton("Test")
         
         # 设置主按钮样式
         self.flash_btn.setStyleSheet("QPushButton { font-size: 14pt; font-weight: bold; padding: 10px; background-color: #4CAF50; color: white; }")
