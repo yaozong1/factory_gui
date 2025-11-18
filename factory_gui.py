@@ -205,6 +205,7 @@ class FactoryGUI(QMainWindow):
         self._await_deadline_ms = 0
         # 治具数据请求标志
         self._requesting_jig_data = False
+        self._jig_request_deadline_ms = 0  # 治具请求超时时间
         self._jig_handshake_sent = False
         self._jig_payload_received = False
         
@@ -957,6 +958,7 @@ class FactoryGUI(QMainWindow):
             # 收到治具的完整payload后，停止发送 !GUI_REQUEST_DATA
             if self._requesting_jig_data:
                 self._requesting_jig_data = False
+                self._jig_request_deadline_ms = 0  # 重置治具请求deadline
                 print("[JIG][DBG] Received payload, stopped sending !GUI_REQUEST_DATA")
                 self._append_log("[JIG] Payload received, stopped requesting\n")
                     
@@ -1017,6 +1019,40 @@ class FactoryGUI(QMainWindow):
                 ctrl_open = self.ctrl_serial.ser is not None and self.ctrl_serial.ser.is_open if self.ctrl_serial.ser else False
                 print(f"[JIG][DBG] Not sending: ctrl_serial.ser={self.ctrl_serial.ser is not None}, is_open={ctrl_open}")
 
+        # 超时检测（必须在return之前执行）
+        # 若正在等待一次结果，检测是否超时
+        if self._awaiting_result and self._await_deadline_ms:
+            if int(time.time() * 1000) > self._await_deadline_ms:
+                self._awaiting_result = False
+                self._await_deadline_ms = 0  # 重置deadline
+                self._requesting_jig_data = False  # 停止请求治具数据
+                self._jig_request_deadline_ms = 0  # 重置治具请求deadline
+                if self._ack_started:
+                    self._append_log('[ACK] Done sending ACK (timeout)\n')
+                    self._ack_started = False
+                # 更新进度条并恢复Test按钮状态（超时）
+                self.progress_bar.setValue(0)
+                self.progress_bar.setFormat("%p% - TIMEOUT")
+                self._reset_test_button()
+                QMessageBox.warning(self, "Wait Timeout", "No selftest result received after flashing timeout.")
+                return
+        
+        # 检测治具请求超时
+        if self._requesting_jig_data and self._jig_request_deadline_ms:
+            if int(time.time() * 1000) > self._jig_request_deadline_ms:
+                self._requesting_jig_data = False
+                self._jig_request_deadline_ms = 0
+                self._awaiting_result = False
+                self._await_deadline_ms = 0
+                if self._ack_started:
+                    self._append_log('[ACK] Done sending ACK (jig timeout)\n')
+                    self._ack_started = False
+                # 更新进度条并恢复Test按钮状态（治具超时）
+                self.progress_bar.setValue(0)
+                self.progress_bar.setFormat("%p% - JIG TIMEOUT")
+                self._reset_test_button()
+                QMessageBox.warning(self, "Jig Timeout", "No response from test jig. Please check jig connection and firmware.")
+                return
 
         chunk = self.flash_serial.read_lines()
         if not chunk:
@@ -1069,19 +1105,6 @@ class FactoryGUI(QMainWindow):
             self.flash_serial.buffer = self.flash_serial.buffer[last_end:]
         elif len(self.flash_serial.buffer) > 100_000:
             self.flash_serial.buffer = self.flash_serial.buffer[-50_000:]
-
-        # 若正在等待一次结果，检测是否超时
-        if self._awaiting_result and self._await_deadline_ms:
-            if int(time.time() * 1000) > self._await_deadline_ms:
-                self._awaiting_result = False
-                if self._ack_started:
-                    self._append_log('[ACK] Done sending ACK (timeout)\n')
-                    self._ack_started = False
-                # 更新进度条并恢复Test按钮状态（超时）
-                self.progress_bar.setValue(0)
-                self.progress_bar.setFormat("%p% - TIMEOUT")
-                self._reset_test_button()
-                QMessageBox.warning(self, "Wait Timeout", "No selftest result received after flashing timeout.")
 
     def _apply_summary(self, data: dict):
         # 更新进度: 90%
@@ -1216,6 +1239,8 @@ class FactoryGUI(QMainWindow):
         # 如果正处于“烧录并等待”的等待阶段，第一帧解析成功即完成
         if self._awaiting_result:
             self._awaiting_result = False
+            self._await_deadline_ms = 0  # 重置deadline
+            self._jig_request_deadline_ms = 0  # 重置治具请求deadline
             self._append_log("[INFO] Done testing\n")
             # 更新进度: 100%
             self.progress_bar.setValue(100)
@@ -1225,7 +1250,7 @@ class FactoryGUI(QMainWindow):
                 self.progress_bar.setFormat("%p% - FAIL")
             # 恢复Test按钮状态（测试完成）
             self._reset_test_button()
-            # 讪CSV
+            # 保存CSV
             self._save_test_result_to_csv(res)
 
     def _save_test_result_to_csv(self, res: SelftestResult):
@@ -1395,11 +1420,11 @@ class FactoryGUI(QMainWindow):
             self.timer.start()
             self.connect_btn.setEnabled(False)
             self.disconnect_btn.setEnabled(True)
-            # 启动等待窗口/超时（例如 40 秒）
+            # 启动等待窗口/超时（20秒）
             self._awaiting_result = True
-            self._await_deadline_ms = int(time.time() * 1000) + 40_000
+            self._await_deadline_ms = int(time.time() * 1000) + 20_000
             self._append_log("[RECONNECT] 等待 DUT 打印 SELFTEST SUMMARY JSON...\n")
-            print(f"[RECONNECT][DBG] awaiting result, deadline in 40s")
+            print(f"[RECONNECT][DBG] awaiting result, deadline in 20s")
         else:
             self._append_log(f"[RECONNECT] 重新打开刷机口失败: {flash_port}\n")
             print(f"[RECONNECT][DBG] flash_port open failed after 20 retries")
@@ -1595,10 +1620,11 @@ class FactoryGUI(QMainWindow):
                             self.progress_signals.update_progress.emit(70, "%p% - Waiting selftest...")
                             # 设置等待标志,触发 on_tick 中的 ACK 发送
                             self._awaiting_result = True
-                            self._await_deadline_ms = int(time.time() * 1000) + 40_000
+                            self._await_deadline_ms = int(time.time() * 1000) + 20_000
                             print("[FLASH][DBG] set _awaiting_result=True, ACK will be sent every 500ms")
                             # 同时向治具发送请求,让治具发送测试 payload
                             self._requesting_jig_data = True
+                            self._jig_request_deadline_ms = int(time.time() * 1000) + 20_000  # 治具请求20秒超时
                             print("[FLASH][DBG] set _requesting_jig_data=True, will request jig data every 500ms")
                             break
                         time.sleep(0.25)
