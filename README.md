@@ -35,24 +35,24 @@ python .\factory_gui.py
     - USB-Serial-JTAG (ESP32-S3 default console) — control port for jig commands and logs
     - CH340 (external USB-UART) — flash port bridged via S3 UART to DUT U0TXD/U0RXD
 2) In GUI, select:
-    - 控制口(治具): USB-Serial-JTAG
-    - 刷机口(DUT): CH340 对应的 COM 口
-3) Click "烧录并等待" and choose the ESP-IDF build file `flash_project_args` inside your DUT project's `build/` folder.
-    - GUI sends `!BOOT` on 控制口 to enter download mode, runs `python -m esptool ... write_flash @flash_project_args` on 刷机口（在 `flash_project_args` 所在的 build 目录下执行，确保相对路径生效），然后发送 `!RUN` 并重连刷机口读取输出。
-4) The GUI waits up to 40s for a `SELFTEST SUMMARY: { ... }` JSON and shows a popup once received.
+    - Control Port (Jig): USB-Serial-JTAG
+    - Flash Port (DUT): CH340 corresponding COM port
+3) Click "Test" button and choose the ESP-IDF build file `flash_project_args` inside your DUT project's `build/` folder.
+    - GUI sends `!BOOT` on control port to enter download mode, runs `python -m esptool ... write_flash @flash_project_args` on flash port (executed in the build directory where `flash_project_args` is located to ensure relative paths work), then sends `!RUN` and reconnects to flash port to read output.
+4) The GUI waits up to 20s for a `SELFTEST SUMMARY: { ... }` JSON and shows a popup once received.
 
 Tips:
-- DTR/RTS wiring is not required: the jig drives EN/IO0 via `!BOOT`/`!RUN` on 控制口.
+- DTR/RTS wiring is not required: the jig drives EN/IO0 via `!BOOT`/`!RUN` on control port.
 - If your build directory changes, re-pick the latest `flash_project_args`.
 
 ## Standalone diagnostics (step-by-step)
 
 Use these buttons to isolate issues:
 
-1) 进下载(!BOOT): sends `!BOOT` on 控制口 so DUT enters bootloader (IO0=0 + EN pulse). Check for `JIG: BOOT OK`.
-2) esptool chip_id: runs `python -m esptool -vv --trace --before no-reset --after no-reset chip_id` on 刷机口; verifies ROM handshake without flashing（带 25s 超时保护）。
-3) 仅刷写(esptool): runs `write_flash @flash_project_args` on 刷机口 without toggling EN/IO0（在 build 目录运行，启用 stub）。
-4) 运行(!RUN): sends `!RUN` on 控制口 (IO0=1 + EN pulse) to start application.
+1) Enter Download (!BOOT): sends `!BOOT` on control port so DUT enters bootloader (IO0=0 + EN pulse). Check for `JIG: BOOT OK`.
+2) esptool chip_id: runs `python -m esptool -vv --trace --before no-reset --after no-reset chip_id` on flash port; verifies ROM handshake without flashing (with 25s timeout protection).
+3) Flash Only (esptool): runs `write_flash @flash_project_args` on flash port without toggling EN/IO0 (executed in build directory, stub enabled).
+4) Run (!RUN): sends `!RUN` on control port (IO0=1 + EN pulse) to start application.
 
 You can perform 1 → 2 → 3 → 4 to pinpoint whether the problem is entering bootloader, esptool connectivity, or flashing itself.
 
@@ -72,10 +72,3 @@ SELFTEST SUMMARY:
 ```
 
 The regex is lenient to whitespace/newlines and only requires `SELFTEST SUMMARY:` followed by a JSON object block.
-
-## Next steps
-
-- Wire up 8-channel ADC (ADS1115x2 or MCP3208) into the jig and stream values to GUI
-- Add a button/flow to automate flashing (call `idf.py -p COMx flash`) if desired
-- Add CSV/JSON export for test records
-- Optional: color rows in voltage table by thresholds
