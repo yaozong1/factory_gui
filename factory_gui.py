@@ -93,6 +93,8 @@ class SelftestResult:
     gnss_bytes: int = 0
     battery_ok: bool = False
     battery_v: float = 0.0
+    ibl_mv: int = 0
+    ibl_pass: bool = False
     ign_tested: bool = False
     ign_pass: bool = False
 
@@ -105,6 +107,7 @@ class SelftestResult:
             self.can_pass,
             self.gnss_ok,
             self.battery_ok,
+            self.ibl_pass,  # 添加IBL到overall判断
             self.ign_pass,  # 添加IGN到overall判断
         ])
 
@@ -120,6 +123,13 @@ class SerialClient:
         if list_ports is None:
             return []
         return [p.device for p in list_ports.comports()]
+    
+    @staticmethod
+    def list_ports_with_desc():
+        """返回端口列表，包含描述信息 [(device, description), ...]"""
+        if list_ports is None:
+            return []
+        return [(p.device, p.description) for p in list_ports.comports()]
 
     def open(self, port: str, baud: int = 115200) -> bool:
         if serial is None:
@@ -526,32 +536,43 @@ class FactoryGUI(QMainWindow):
     def _refresh_ports(self):
         for combo in (self.ctrl_combo, self.flash_combo):
             combo.clear()
-        ports = SerialClient.list_ports()
+        ports_with_desc = SerialClient.list_ports_with_desc()
         
         # 从配置获取上次使用的端口
         last_ctrl = self.config.get("last_ctrl_port")
         last_flash = self.config.get("last_flash_port")
         
-        # 智能选择优先级：1. 配置记忆 2. COM24/COM6 默认值
+        # 智能选择优先级：1. 配置记忆 2. 描述匹配 3. 固定默认值
         ctrl_default = None
         flash_default = None
         
-        for p in ports:
-            self.ctrl_combo.addItem(p)
-            self.flash_combo.addItem(p)
+        for device, desc in ports_with_desc:
+            self.ctrl_combo.addItem(device)
+            self.flash_combo.addItem(device)
             
-            # 优先使用配置中记忆的端口
-            if last_ctrl and last_ctrl in p:
-                ctrl_default = p
-            elif not ctrl_default and "COM24" in p:
-                ctrl_default = p
+            # Control Port 选择逻辑
+            if last_ctrl and last_ctrl in device:
+                # 优先：配置中记忆的端口
+                ctrl_default = device
+            elif not ctrl_default:
+                # 次优：根据描述自动匹配（USB Serial, JTAG）
+                desc_lower = desc.lower()
+                if any(keyword in desc_lower for keyword in ["usb serial", "jtag", "usb-serial-jtag"]):
+                    ctrl_default = device
+                    self._append_log(f"[AUTO] Detected control port by description: {device} ({desc})\n")
             
-            if last_flash and last_flash in p:
-                flash_default = p
-            elif not flash_default and "COM6" in p:
-                flash_default = p
+            # Flash Port 选择逻辑
+            if last_flash and last_flash in device:
+                # 优先：配置中记忆的端口
+                flash_default = device
+            elif not flash_default:
+                # 次优：根据描述自动匹配（CH340, CH343, USB-to-Serial）
+                desc_lower = desc.lower()
+                if any(keyword in desc_lower for keyword in ["ch340", "ch343", "ch9102", "usb-serial chip"]):
+                    flash_default = device
+                    self._append_log(f"[AUTO] Detected flash port by description: {device} ({desc})\n")
         
-        if not ports:
+        if not ports_with_desc:
             self.ctrl_combo.addItem("<No Port>")
             self.flash_combo.addItem("<No Port>")
         else:
@@ -560,13 +581,15 @@ class FactoryGUI(QMainWindow):
                 idx = self.ctrl_combo.findText(ctrl_default)
                 if idx >= 0:
                     self.ctrl_combo.setCurrentIndex(idx)
-                    self._append_log(f"[AUTO] Auto-select control port: {ctrl_default}\n")
+                    if last_ctrl and last_ctrl in ctrl_default:
+                        self._append_log(f"[AUTO] Auto-select control port (saved): {ctrl_default}\n")
             
             if flash_default:
                 idx = self.flash_combo.findText(flash_default)
                 if idx >= 0:
                     self.flash_combo.setCurrentIndex(idx)
-                    self._append_log(f"[AUTO] Auto-select flash port: {flash_default}\n")
+                    if last_flash and last_flash in flash_default:
+                        self._append_log(f"[AUTO] Auto-select flash port (saved): {flash_default}\n")
 
     def _toggle_advanced(self):
         """切换高级功能显示/隐藏"""
@@ -931,8 +954,9 @@ class FactoryGUI(QMainWindow):
                     # update displayed voltage (override ch8 if needed)
                     self.volt_table.item(7, 1).setText(f"{ibl_v:.3f}")
 
-                    lower_m = int(round(2530 * 0.95))
-                    upper_m = int(round(2530 * 1.05))
+                    # IBL 电压应在 2.2V - 2.5V 范围内 (2200mV - 2500mV)
+                    lower_m = 2200
+                    upper_m = 2500
                     if ibl_mv == 0:
                         status = "N/A"
                         color = QColor(211, 211, 211)
@@ -1152,6 +1176,18 @@ class FactoryGUI(QMainWindow):
         ign = data.get("ign", {}) or {}
         res.ign_tested = bool(ign.get("tested", False))
         res.ign_pass = bool(ign.get("pass", False))
+        
+        # 解析 IBL 测试结果
+        if "ibl" in data and isinstance(data["ibl"], dict):
+            # 新格式: "ibl": { "pass": true/false, "mv": 2364 }
+            ibl = data.get("ibl", {})
+            res.ibl_pass = bool(ibl.get("pass", False))
+            res.ibl_mv = int(ibl.get("mv", 0))
+        elif "ibl_mv" in data:
+            # 旧格式: "ibl_mv": 2364（只有数值，需要自行判断）
+            res.ibl_mv = int(data.get("ibl_mv", 0))
+            # IBL 电压应在 2.2V - 2.5V 范围内 (2200mV - 2500mV)
+            res.ibl_pass = 2200 <= res.ibl_mv <= 2500
 
         # 更新界面
         # self.lbl_overall.set_state(res.overall)  # Will be set after voltage check
@@ -1179,21 +1215,27 @@ class FactoryGUI(QMainWindow):
         self.lbl_bat_v.setText(f"V={res.battery_v:.2f}V")
         self.lbl_ign.set_state(res.ign_pass)  # 更新IGN光耦测试状态
 
+        # 更新 IBL 测试状态
+        self.lbl_ibl.set_state(res.ibl_pass)
+        if res.ibl_mv > 0:
+            ibl_v = res.ibl_mv / 1000.0
+            self.lbl_ibl_v.setText(f"V={ibl_v:.3f}V")
+        else:
+            self.lbl_ibl_v.setText("V=N/A")
+
         # IBL (IO2) from selftest payload (mV). PASS if within 2530mV ?5%.
+        # 保留旧的逻辑作为备用（兼容性）
         try:
             ibl_mv = data.get("ibl_mv", None)
-            if ibl_mv is None:
-                # some payloads might include 0 or omit the field
-                self.lbl_ibl.setText("-")
-                self.lbl_ibl_v.setText("V=N/A")
-            else:
+            if ibl_mv is not None and res.ibl_mv == 0:
+                # 如果新逻辑没有解析到，使用旧逻辑
                 ibl_mv = int(ibl_mv)
                 ibl_v = ibl_mv / 1000.0
                 self.lbl_ibl_v.setText(f"V={ibl_v:.3f}V")
-                lower = int(round(2530 * 0.95))
-                upper = int(round(2530 * 1.05))
+                # IBL 电压应在 2.2V - 2.5V 范围内 (2200mV - 2500mV)
+                lower = 2200
+                upper = 2500
                 if ibl_mv == 0:
-                    # treat 0 as N/A
                     self.lbl_ibl.setText("N/A")
                     self.lbl_ibl.setStyleSheet("color: gray; font-weight: bold;")
                 elif lower <= ibl_mv <= upper:
@@ -1201,7 +1243,6 @@ class FactoryGUI(QMainWindow):
                 else:
                     self.lbl_ibl.set_state(False)
         except Exception:
-            # ignore parse errors
             pass
 
 
